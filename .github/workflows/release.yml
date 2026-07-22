@@ -1,0 +1,37 @@
+name: Release
+
+# Pushing a version tag (e.g. v0.1.0) builds a platform-specific .vsix for every
+# target and attaches them to a GitHub release. No Marketplace token needed —
+# better-sqlite3 ships N-API prebuilds, so all targets build on one runner.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install dependencies (extension)
+        run: bun install --frozen-lockfile
+
+      - name: Install dependencies (webview)
+        run: bun install --frozen-lockfile
+        working-directory: webview
+
+      - name: Package all targets
+        run: bun run package
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" release/*.vsix --title "${{ github.ref_name }}" --generate-notes

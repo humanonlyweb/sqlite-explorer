@@ -1,0 +1,25 @@
+# The extension bundle and the vendored native module both live in dist/, which
+# is shipped. Everything else is source, tooling, or test data.
+.vscode/**
+src/**
+webview/**
+scripts/**
+node_modules/**
+rolldown.build.ts
+tsconfig.json
+.oxlintrc.json
+.oxfmtrc.json
+.gitignore
+bun.lock
+release/**
+**/*.map
+**/*.ts
+!dist/**
+
+# test databases & artifacts
+*.db
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+DEMO/**
+*.vsix

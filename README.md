@@ -1,0 +1,109 @@
+# SQLite Explorer
+
+[![CI](https://github.com/humanonlyweb/sqlite-explorer/actions/workflows/ci.yml/badge.svg)](https://github.com/humanonlyweb/sqlite-explorer/actions/workflows/ci.yml)
+
+Browse, query, and edit SQLite databases directly in VS Code. Open any `.db` /
+`.sqlite` / `.sqlite3` / `.db3` file and it opens in a fast, virtualized data
+grid.
+
+## Features
+
+- **Data grid** — DOM-virtualized (handles large tables), sortable columns,
+  per-column filters, inline cell editing, a full-row edit modal, add/delete
+  rows (with a confirmation step), and foreign-key links that jump to the
+  referenced row.
+- **Structure view** — columns (type, PK, not-null, default), indexes, and
+  foreign keys.
+- **SQL console** — run arbitrary SQL with `Cmd/Ctrl+Enter`; results render in
+  the same grid (capped at 10,000 rows — export for the full set).
+- **Export** — a whole table (honoring the active sort/filter), the selected
+  rows, or a query result — as CSV, SQL inserts, or JSON (array or lines).
+- **Read-only mode** — toggle to browse without any risk of writes.
+
+> [!NOTE]
+> Edits are written straight to the database file, so there is no separate "save"
+> step. Enable read-only mode if you don't want that.
+
+## Install
+
+Not on the Marketplace yet — build a `.vsix` and install it:
+
+```bash
+bun install
+node scripts/package.mjs darwin-arm64          # pick your platform
+code --install-extension release/sqlite-explorer-darwin-arm64-0.1.0.vsix
+```
+
+Then reload VS Code (or Extensions view → `⋯` → **Install from VSIX…**). Swap
+`darwin-arm64` for your platform — `darwin-x64`, `win32-x64`, `win32-arm64`,
+`linux-x64`, `linux-arm64`, `alpine-x64`, `alpine-arm64` — or run `bun run
+package` to build them all.
+
+To just try it without installing, open the project and press **F5** (launches
+an Extension Development Host with the extension loaded).
+
+## Usage
+
+- Open a database file from the Explorer, or run **"SQLite Explorer: Open
+  Database…"** from the Command Palette.
+- **Inline edit:** double-click a cell. `Enter` saves, `Esc` cancels,
+  `Cmd/Ctrl+Enter` sets `NULL`.
+- **Full-row edit:** select a row and choose **Edit row** — handy for wide
+  tables or JSON-heavy columns where inline editing is fiddly.
+
+## Settings
+
+| Setting                   | Default | Description               |
+| ------------------------- | ------- | ------------------------- |
+| `sqliteExplorer.pageSize` | `1000`  | Rows fetched per page.    |
+| `sqliteExplorer.readOnly` | `false` | Open databases read-only. |
+
+## Development
+
+Requires [Bun](https://bun.sh) and VS Code.
+
+```bash
+bun install        # install deps (better-sqlite3 ships prebuilt binaries — no compile step)
+bun run build      # bundle extension host (Rolldown) + webview (Vite)
+bun run lint       # oxlint
+```
+
+> [!NOTE]
+> I removed `vue-tsc` because at the moment, it doesn't work well with Typescript 7. Tracking [the issue](https://github.com/vuejs/language-tools/issues/5381).
+
+Press **F5** to launch the Extension Development Host. Iterating on the webview:
+`bun run watch:web` (Vite) alongside `bun run watch` (extension host).
+
+### Layout
+
+```
+src/            extension host — DB engine, custom editor, message protocol
+webview/        Vue 3 + Vite app 🔥 → dist/webview/
+dist/           build output (extension.js + webview/)
+```
+
+The webview talks to the host over a typed `postMessage` protocol
+(`src/protocol.ts`, shared via the `@shared` alias). `better-sqlite3` is a
+native module loaded at runtime; it ships N-API prebuilds (ABI-stable across
+Node and Electron), so no per-platform rebuild is needed.
+
+### Packaging
+
+`bun run package` writes a platform-specific `.vsix` for every target into
+`release/`, vendoring the one matching `better-sqlite3` prebuild into each so
+the package stays small and runs without compilation. Build a single target
+with, e.g., `node scripts/package.mjs darwin-arm64`.
+
+### AI Usage disclosure 🤖
+
+I used Claude Code to help write some of the code in this project.
+Specifically, in debugging better-sqlite3 while trying to package and in reviewing the code for `src/database.ts`.
+
+## Acknowledgements
+
+Icons are [VS Code Codicons](https://github.com/microsoft/vscode-codicons) by
+Microsoft, licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+## License
+
+MIT

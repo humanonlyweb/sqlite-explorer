@@ -1,0 +1,117 @@
+{
+  "name": "sqlite-explorer",
+  "displayName": "SQLite Explorer",
+  "version": "0.1.0",
+  "description": "Browse, query, and edit SQLite databases directly in VS Code.",
+  "categories": [
+    "Data Science",
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "database",
+    "editor",
+    "sql",
+    "sqlite",
+    "viewer"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/humanonlyweb/sqlite-explorer.git"
+  },
+  "publisher": "humanonlyweb",
+  "type": "module",
+  "main": "./dist/extension.js",
+  "scripts": {
+    "vscode:prepublish": "bun run build",
+    "build": "bun run build:ext && bun run build:web",
+    "build:ext": "node rolldown.build.ts --production",
+    "build:web": "cd webview && bun run build",
+    "watch": "node rolldown.build.ts --watch",
+    "watch:web": "cd webview && bun run watch",
+    "package": "node scripts/package.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^26.1.1",
+    "@types/vscode": "^1.125.0",
+    "@vscode/vsce": "^3.9.2",
+    "nano-staged": "^1.0.2",
+    "oxfmt": "^0.60.0",
+    "oxlint": "^1.75.0",
+    "oxlint-tsgolint": "^7.0.2001",
+    "rolldown": "^1.2.0",
+    "simple-git-hooks": "^2.13.1",
+    "typescript": "^7.0.2"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "bunx nano-staged"
+  },
+  "nano-staged": {
+    "*.{js,ts,vue}": [
+      "bunx oxlint --fix",
+      "bunx oxfmt --write"
+    ],
+    "*.{scss,css}": "bunx oxfmt --write"
+  },
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "sqliteExplorer.editor",
+        "displayName": "SQLite Explorer",
+        "selector": [
+          {
+            "filenamePattern": "*.db"
+          },
+          {
+            "filenamePattern": "*.sqlite"
+          },
+          {
+            "filenamePattern": "*.sqlite3"
+          },
+          {
+            "filenamePattern": "*.db3"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "sqliteExplorer.open",
+        "title": "SQLite Explorer: Open Database…"
+      }
+    ],
+    "configuration": {
+      "title": "SQLite Explorer",
+      "properties": {
+        "sqliteExplorer.pageSize": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 50,
+          "maximum": 100000,
+          "description": "Number of rows fetched per page from the database."
+        },
+        "sqliteExplorer.readOnly": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open databases in read-only mode (disables editing, inserts, and deletes)."
+        }
+      }
+    }
+  },
+  "activationEvents": [],
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "packageManager": "bun@1.3.14"
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "sortImports": {
+    "groups": [
+      "builtin",
+      ["external", "type-external"],
+      ["internal", "type-internal"],
+      ["parent", "type-parent"],
+      ["sibling", "type-sibling"],
+      ["index", "type-index"],
+      "unknown"
+    ],
+    "internalPattern": ["~~/", "~/", "@/", "#"]
+  },
+  "ignorePatterns": ["tsconfig.*.json", "server/database/migrations/"]
+}
