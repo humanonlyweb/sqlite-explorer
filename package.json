@@ -20,7 +20,7 @@
     "type": "git",
     "url": "https://github.com/humanonlyweb/sqlite-explorer.git"
   },
-  "publisher": "humanonlyweb",
+  "publisher": "HumanOnlyWeb",
   "type": "module",
   "main": "./dist/extension.js",
   "scripts": {
@@ -47,6 +47,7 @@
     "@types/vscode": "^1.125.0",
     "@vscode/vsce": "^3.9.2",
     "nano-staged": "^1.0.2",
+    "ovsx": "^1.0.2",
     "oxfmt": "^0.60.0",
     "oxlint": "^1.75.0",
     "oxlint-tsgolint": "^7.0.2001",
@@ -99,7 +100,7 @@
           "type": "number",
           "default": 1000,
           "minimum": 50,
-          "maximum": 100000,
+          "maximum": 100000.0,
           "description": "Number of rows fetched per page from the database."
         },
         "sqliteExplorer.readOnly": {
