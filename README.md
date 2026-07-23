@@ -26,7 +26,13 @@ grid.
 
 ## Install
 
-Not on the Marketplace yet — build a `.vsix` and install it:
+> [!IMPORTANT]
+> **Not on the VS Code Marketplace yet.** I haven't been able to create and
+> publish the extension on the Microsoft Marketplace, and I'm currently in
+> contact with their support to resolve it. Until that's sorted, please build
+> and install locally using the steps below.
+
+Build a `.vsix` and install it:
 
 ```bash
 bun install
