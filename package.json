@@ -23,6 +23,7 @@
   "publisher": "humanonlyweb",
   "type": "module",
   "main": "./dist/extension.js",
+  "icon": "images/icon.png",
   "scripts": {
     "vscode:prepublish": "bun run build",
     "build": "bun run build:ext && bun run build:web",

@@ -1,6 +1,8 @@
 # The extension bundle and the vendored native module both live in dist/, which
 # is shipped. Everything else is source, tooling, or test data.
 .vscode/**
+.claude/**
+.github/**
 src/**
 webview/**
 scripts/**

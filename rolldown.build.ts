@@ -1,7 +1,13 @@
+import { rmSync } from "node:fs";
+
 import { rolldown, watch, type InputOptions, type OutputOptions } from "rolldown";
 
 const production = process.argv.includes("--production");
 const isWatch = process.argv.includes("--watch");
+
+if (!process.env.SQLITE_EXPLORER_PACKAGING) {
+  rmSync("dist/better-sqlite3", { recursive: true, force: true });
+}
 
 const input: InputOptions = {
   input: "src/extension.ts",

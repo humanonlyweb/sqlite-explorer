@@ -53,13 +53,18 @@ function vendor(prebuild) {
 
 mkdirSync(OUT, { recursive: true });
 
-for (const target of targets) {
-  const prebuild = TARGETS[target];
-  console.log(`\n▶  ${target}  (prebuilds/${prebuild}.node)`);
-  vendor(prebuild);
-  execSync(`bunx @vscode/vsce package --no-dependencies --target ${target} -o ${OUT}/`, {
-    stdio: "inherit",
-  });
+try {
+  for (const target of targets) {
+    const prebuild = TARGETS[target];
+    console.log(`\n▶  ${target}  (prebuilds/${prebuild}.node)`);
+    vendor(prebuild);
+    execSync(`bunx @vscode/vsce package --no-dependencies --target ${target} -o ${OUT}/`, {
+      stdio: "inherit",
+      env: { ...process.env, SQLITE_EXPLORER_PACKAGING: "1" },
+    });
+  }
+} finally {
+  rmSync(VENDOR, { recursive: true, force: true });
 }
 
 console.log(`\n✔  VSIX packages written to ${OUT}/`);
