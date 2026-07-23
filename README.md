@@ -11,7 +11,6 @@ grid.
 <img width="1966" height="1175" alt="Screenshot 2026-07-22 at 9 36 59 PM" src="https://github.com/user-attachments/assets/77e303be-b6e3-432b-9883-0564110f59d9" />
 <img width="1966" height="1175" alt="Screenshot 2026-07-22 at 9 36 34 PM" src="https://github.com/user-attachments/assets/a320288a-1d28-4e77-a824-74caddd1bd4a" />
 
-
 ## Features
 
 - **Data grid** — DOM-virtualized (handles large tables), sortable columns,
