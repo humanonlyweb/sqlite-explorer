@@ -8,7 +8,8 @@
 // packages. Every target is therefore buildable from a single machine.
 //
 // Usage:
-//   node scripts/package.mjs                 # all targets
+//   node scripts/package.mjs                 # this machine's target (dev convenience)
+//   node scripts/package.mjs all             # every target (used by the release workflow)
 //   node scripts/package.mjs darwin-arm64    # one or more specific targets
 import { execSync } from "node:child_process";
 import { cpSync, mkdirSync, rmSync } from "node:fs";
@@ -30,13 +31,29 @@ const SRC = "node_modules/better-sqlite3";
 const VENDOR = "dist/better-sqlite3";
 const OUT = "release";
 
+// No args will build the current machine's target.
+function currentTarget() {
+  const key = `${process.platform}-${process.arch}`;
+  if (!(key in TARGETS)) {
+    console.error(`No prebuild target for this machine (${key}).`);
+    console.error(`Pass a target explicitly. Known targets: ${Object.keys(TARGETS).join(", ")}`);
+    process.exit(1);
+  }
+  return key;
+}
+
 const requested = process.argv.slice(2);
-const targets = requested.length > 0 ? requested : Object.keys(TARGETS);
+const targets =
+  requested.length === 0
+    ? [currentTarget()]
+    : requested.includes("all")
+      ? Object.keys(TARGETS)
+      : requested;
 
 const unknown = targets.filter((t) => !(t in TARGETS));
 if (unknown.length > 0) {
   console.error(`Unknown target(s): ${unknown.join(", ")}`);
-  console.error(`Known targets: ${Object.keys(TARGETS).join(", ")}`);
+  console.error(`Known targets: ${Object.keys(TARGETS).join(", ")} (or "all")`);
   process.exit(1);
 }
 

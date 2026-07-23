@@ -29,7 +29,7 @@ jobs:
         working-directory: webview
 
       - name: Package all targets
-        run: bun run package
+        run: bun run package all
 
       - name: Publish GitHub release
         env:

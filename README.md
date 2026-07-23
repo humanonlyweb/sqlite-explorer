@@ -30,14 +30,14 @@ Not on the Marketplace yet — build a `.vsix` and install it:
 
 ```bash
 bun install
-node scripts/package.mjs darwin-arm64          # pick your platform
+bun run package                                # builds for your current OS/arch
 code --install-extension release/sqlite-explorer-darwin-arm64-0.1.0.vsix
 ```
 
-Then reload VS Code (or Extensions view → `⋯` → **Install from VSIX…**). Swap
-`darwin-arm64` for your platform — `darwin-x64`, `win32-x64`, `win32-arm64`,
-`linux-x64`, `linux-arm64`, `alpine-x64`, `alpine-arm64` — or run `bun run
-package` to build them all.
+`bun run package` detects your platform and builds the matching `.vsix` into
+`release/` (swap the filename above for the one it writes). Then reload VS Code
+(or Extensions view → `⋯` → **Install from VSIX…**). See
+[Packaging](#packaging) for other targets.
 
 To just try it without installing, open the project and press **F5** (launches
 an Extension Development Host with the extension loaded).
@@ -89,10 +89,11 @@ Node and Electron), so no per-platform rebuild is needed.
 
 ### Packaging
 
-`bun run package` writes a platform-specific `.vsix` for every target into
-`release/`, vendoring the one matching `better-sqlite3` prebuild into each so
-the package stays small and runs without compilation. Build a single target
-with, e.g., `node scripts/package.mjs darwin-arm64`.
+`bun run package` writes a platform-specific `.vsix` to `release/`, vendoring
+the one matching `better-sqlite3` prebuild so the package stays small and runs
+without compilation. With no argument it builds for the current machine; pass
+`all` to build every target (what the release workflow runs), or name specific
+targets, e.g. `bun run package darwin-arm64 win32-x64`.
 
 ### AI Usage disclosure 🤖
 
