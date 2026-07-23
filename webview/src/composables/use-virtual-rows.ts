@@ -21,13 +21,30 @@ export function useVirtualRows(container: Ref<HTMLElement | null>, total: Ref<nu
     end.value = Math.min(total.value, Math.ceil((scrollTop + viewport) / ROW_HEIGHT) + OVERSCAN);
   }
 
-  const onScroll = () => update();
+  let frame = 0;
+  function scheduleUpdate(): void {
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      update();
+    });
+  }
+
+  let resizeObserver: ResizeObserver | undefined;
 
   onMounted(() => {
-    container.value?.addEventListener("scroll", onScroll, { passive: true });
+    const c = container.value;
+    if (!c) return;
+    c.addEventListener("scroll", scheduleUpdate, { passive: true });
+    resizeObserver = new ResizeObserver(scheduleUpdate);
+    resizeObserver.observe(c);
     update();
   });
-  onBeforeUnmount(() => container.value?.removeEventListener("scroll", onScroll));
+  onBeforeUnmount(() => {
+    if (frame) cancelAnimationFrame(frame);
+    resizeObserver?.disconnect();
+    container.value?.removeEventListener("scroll", scheduleUpdate);
+  });
 
   watch(total, () => {
     if (container.value) container.value.scrollTop = 0;

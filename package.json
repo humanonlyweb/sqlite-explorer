@@ -23,7 +23,6 @@
   "publisher": "humanonlyweb",
   "type": "module",
   "main": "./dist/extension.js",
-  "icon": "images/icon.png",
   "scripts": {
     "vscode:prepublish": "bun run build",
     "build": "bun run build:ext && bun run build:web",
@@ -36,7 +35,8 @@
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "oxfmt",
-    "format:check": "oxfmt --check"
+    "format:check": "oxfmt --check",
+    "prepare": "simple-git-hooks"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.1"
@@ -62,7 +62,7 @@
       "bunx oxlint --fix",
       "bunx oxfmt --write"
     ],
-    "*.{scss,css}": "bunx oxfmt --write"
+    "*.{scss,css,json}": "bunx oxfmt --write"
   },
   "contributes": {
     "customEditors": [
@@ -111,6 +111,7 @@
     }
   },
   "activationEvents": [],
+  "icon": "images/icon.png",
   "engines": {
     "vscode": "^1.125.0"
   },
