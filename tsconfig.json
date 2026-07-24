@@ -2,6 +2,7 @@
   "compilerOptions": {
     "module": "esnext",
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node", "vscode"],

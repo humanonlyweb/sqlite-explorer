@@ -82,5 +82,10 @@ const { currentTable } = useExplorer();
         </tbody>
       </table>
     </template>
+
+    <template v-if="currentTable.ddl">
+      <h3><i class="codicon codicon-code" aria-hidden="true"></i>Definition</h3>
+      <pre class="ddl"><code>{{ currentTable.ddl }}</code></pre>
+    </template>
   </div>
 </template>

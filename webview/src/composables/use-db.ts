@@ -18,6 +18,8 @@ let reqSeq = 0;
 const pending = new Map<number, ResponseHandler>();
 
 export const schema = shallowRef<DatabaseSchema | null>(null);
+export const externalChangeCount = shallowRef(0);
+export const reloadCount = shallowRef(0);
 
 function isResponse<K extends OutboundMessage["type"]>(
   msg: OutboundMessage,
@@ -60,11 +62,25 @@ export function initBridge(): void {
     }
     switch (msg.type) {
       case "init":
-      case "reloaded":
         schema.value = msg.schema;
         break;
-      case "fatal":
-        showToast(msg.message, true);
+      case "reloaded":
+        schema.value = msg.schema;
+        reloadCount.value++;
+        break;
+      case "rowCount": {
+        const current = schema.value;
+        const i = current?.tables.findIndex((t) => t.name === msg.table) ?? -1;
+        if (!current || i < 0) break;
+        const tables = current.tables.slice();
+        tables[i] = { ...tables[i], rowCount: msg.count };
+        schema.value = { ...current, tables };
+        break;
+      }
+      case "externalChange":
+        schema.value = msg.schema;
+        externalChangeCount.value++;
+        showToast("Database was modified outside the editor — reloaded.");
         break;
     }
   });

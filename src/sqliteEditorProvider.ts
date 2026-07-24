@@ -1,23 +1,42 @@
 import { randomBytes } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import * as path from "path";
 
 import * as vscode from "vscode";
 
-import { SqliteDatabase } from "./database";
-import type { DatabaseSchema, InboundMessage, OutboundMessage, TableSchema } from "./protocol";
+import { SqliteDatabase } from "./database.ts";
+import type { DatabaseSchema, InboundMessage, OutboundMessage, TableSchema } from "./protocol.ts";
+import { dateStamp, formatForPath, serializeChunks, slugify, type ExportRow } from "./serialize.ts";
+
+const CASCADE_NOTE =
+  "Deleted rows in other tables too (ON DELETE CASCADE or a trigger), so this can't be undone.";
+const BULK_DELETE_NOTE = "Too many rows to keep an undo snapshot, so this can't be undone.";
 
 class SqliteDocument implements vscode.CustomDocument {
   readonly uri: vscode.Uri;
   readonly db: SqliteDatabase;
   schema: DatabaseSchema;
+  // One document can back several panels (split view), so sends fan out.
+  readonly panels = new Set<(m: OutboundMessage) => void>();
+  readonly disposables: vscode.Disposable[] = [];
+  dataVersion: number;
 
   constructor(uri: vscode.Uri, db: SqliteDatabase, schema: DatabaseSchema) {
     this.uri = uri;
     this.db = db;
     this.schema = schema;
+    this.dataVersion = db.dataVersion();
+  }
+
+  broadcast(msg: OutboundMessage): void {
+    for (const post of this.panels) post(msg);
   }
 
   dispose(): void {
+    for (const d of this.disposables) d.dispose();
+    this.panels.clear();
     this.db.close();
   }
 }
@@ -45,7 +64,45 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
       .get<boolean>("readOnly", false);
     const db = new SqliteDatabase(uri.fsPath, readOnly);
     const schema = db.readSchema(path.basename(uri.fsPath));
-    return new SqliteDocument(uri, db, schema);
+    const document = new SqliteDocument(uri, db, schema);
+    this.watchForExternalChanges(document);
+    return document;
+  }
+
+  /**
+   * Watches the database file (and its -wal sidecar, which is where writes land
+   * first in WAL mode) and reloads when another process commits. `data_version`
+   * is the discriminator: SQLite bumps it only for other connections, so our own
+   * writes can't trigger a refresh loop.
+   */
+  private watchForExternalChanges(document: SqliteDocument): void {
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(
+        vscode.Uri.file(path.dirname(document.uri.fsPath)),
+        `${path.basename(document.uri.fsPath)}*`,
+      ),
+    );
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = () => {
+      if (timer) clearTimeout(timer);
+      // WAL commits touch several files in quick succession; settle before reading.
+      timer = setTimeout(() => {
+        try {
+          const version = document.db.dataVersion();
+          if (version === document.dataVersion) return;
+          document.dataVersion = version;
+          document.schema = document.db.readSchema(document.schema.fileName);
+          document.broadcast({ type: "externalChange", schema: document.schema });
+        } catch {
+          /* file mid-write or briefly locked; the next event will catch it */
+        }
+      }, 250);
+    };
+
+    watcher.onDidChange(check);
+    watcher.onDidCreate(check);
+    document.disposables.push(watcher, { dispose: () => timer && clearTimeout(timer) });
   }
 
   // Writes are immediate, so these are no-ops that keep the document clean.
@@ -68,12 +125,18 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
     };
     webviewPanel.webview.html = await this.getHtml(webviewPanel.webview);
 
-    const post = (msg: OutboundMessage) => webviewPanel.webview.postMessage(msg);
+    const post = (msg: OutboundMessage) => {
+      void webviewPanel.webview.postMessage(msg);
+    };
+    document.panels.add(post);
 
     const sub = webviewPanel.webview.onDidReceiveMessage((msg: InboundMessage) =>
       this.handleMessage(document, msg, post),
     );
-    webviewPanel.onDidDispose(() => sub.dispose());
+    webviewPanel.onDidDispose(() => {
+      document.panels.delete(post);
+      sub.dispose();
+    });
   }
 
   private tableByName(document: SqliteDocument, name: string): TableSchema | undefined {
@@ -109,33 +172,66 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
           const { result, rowsAffected, truncated } = db.runQuery(msg.sql);
           if (rowsAffected !== undefined && result === undefined) {
             // A mutation may have changed the schema or row counts.
-            this.reload(document, post);
+            this.reload(document);
           }
           post({ type: "queryResult", reqId: msg.reqId, result, rowsAffected, truncated });
           return;
         }
 
-        case "updateCell":
-          db.updateCell(msg.table, msg.rowid, msg.column, msg.value);
-          post({ type: "mutationResult", reqId: msg.reqId, ok: true });
+        case "updateCell": {
+          const undo = db.updateCell(msg.table, msg.rowid, msg.column, msg.value);
+          post({ type: "mutationResult", reqId: msg.reqId, ok: true, undo });
           return;
+        }
 
-        case "updateRow":
-          db.updateRow(msg.table, msg.rowid, msg.values);
-          post({ type: "mutationResult", reqId: msg.reqId, ok: true });
+        case "updateRow": {
+          const undo = db.updateRow(msg.table, msg.rowid, msg.values);
+          post({ type: "mutationResult", reqId: msg.reqId, ok: true, undo });
           return;
+        }
 
-        case "insertRow":
-          db.insertRow(msg.table, msg.values);
-          this.reload(document, post);
-          post({ type: "mutationResult", reqId: msg.reqId, ok: true });
+        case "insertRow": {
+          const write = db.insertRow(msg.table, msg.values);
+          this.afterWrite(document, msg.table, write.cascaded);
+          post({ type: "mutationResult", reqId: msg.reqId, ok: true, undo: write.undo });
           return;
+        }
 
-        case "deleteRows":
-          db.deleteRows(msg.table, msg.rowids);
-          this.reload(document, post);
-          post({ type: "mutationResult", reqId: msg.reqId, ok: true });
+        case "deleteRows": {
+          const write = db.deleteRows(msg.table, msg.rowids);
+          this.afterWrite(document, msg.table, write.cascaded);
+          post({
+            type: "mutationResult",
+            reqId: msg.reqId,
+            ok: true,
+            undo: write.undo,
+            undoUnavailable: write.undo
+              ? undefined
+              : write.cascaded
+                ? CASCADE_NOTE
+                : BULK_DELETE_NOTE,
+          });
           return;
+        }
+
+        case "previewDelete": {
+          const preview = db.previewDelete(msg.table, msg.rowids);
+          post({ type: "deletePreview", reqId: msg.reqId, preview });
+          return;
+        }
+
+        case "applyUndo": {
+          const write = db.applyUndo(msg.op);
+          this.afterWrite(document, msg.op.table, write.cascaded);
+          post({
+            type: "mutationResult",
+            reqId: msg.reqId,
+            ok: true,
+            undo: write.undo,
+            undoUnavailable: write.undo ? undefined : CASCADE_NOTE,
+          });
+          return;
+        }
 
         case "exportCsv": {
           const p = await this.exportRows(document, msg.query.table, msg.query.table, () =>
@@ -155,7 +251,7 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
         }
 
         case "refresh":
-          this.reload(document, post);
+          this.reload(document);
           return;
       }
     } catch (err) {
@@ -165,13 +261,31 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
       // Also surface it on the specific channels the webview may be awaiting.
       post({ type: "tableData", reqId, error: message });
       post({ type: "queryResult", reqId, error: message });
+      post({ type: "deletePreview", reqId, error: message });
       post({ type: "exportResult", reqId, ok: false, error: message });
     }
   }
 
-  private reload(document: SqliteDocument, post: (m: OutboundMessage) => void): void {
+  private reload(document: SqliteDocument): void {
     document.schema = document.db.readSchema(document.schema.fileName);
-    post({ type: "reloaded", schema: document.schema });
+    document.dataVersion = document.db.dataVersion();
+    document.broadcast({ type: "reloaded", schema: document.schema });
+  }
+
+  /**
+   * A row write can't change the schema, and re-reading it costs a COUNT(*) plus
+   * four PRAGMAs per table. Patch the one count that moved instead, falling back
+   * to a full reload only when the write cascaded into tables we can't name cheaply.
+   */
+  private afterWrite(document: SqliteDocument, table: string, cascaded: boolean): void {
+    if (cascaded) {
+      this.reload(document);
+      return;
+    }
+    const target = this.tableByName(document, table);
+    if (target) target.rowCount = document.db.tableRowCount(table);
+    document.dataVersion = document.db.dataVersion();
+    document.broadcast({ type: "rowCount", table, count: target?.rowCount ?? 0 });
   }
 
   // Streams the rows to a file in whichever format the user picks from the save
@@ -181,7 +295,7 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
     document: SqliteDocument,
     baseName: string,
     tableName: string,
-    iterate: () => Generator<{ columns: string[]; row: unknown[] }>,
+    iterate: () => Generator<ExportRow>,
   ): Promise<string | undefined> {
     const fileName = `${slugify(baseName)}-${dateStamp()}.csv`;
     const target = await vscode.window.showSaveDialog({
@@ -195,8 +309,15 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
     });
     if (!target) return undefined;
 
-    const content = serializeRows(formatForPath(target.fsPath), tableName, iterate());
-    await vscode.workspace.fs.writeFile(target, Buffer.from(content, "utf8"));
+    const chunks = serializeChunks(formatForPath(target.fsPath), tableName, iterate());
+    if (target.scheme === "file") {
+      // Backpressure holds the row iterator to the speed of the disk, so the
+      // export is never fully resident.
+      await pipeline(Readable.from(chunks), createWriteStream(target.fsPath));
+    } else {
+      // Virtual/remote filesystems only expose a whole-buffer write.
+      await vscode.workspace.fs.writeFile(target, Buffer.from([...chunks].join(""), "utf8"));
+    }
     return target.fsPath;
   }
 
@@ -228,119 +349,6 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
       `<head>\n    <meta http-equiv="Content-Security-Policy" content="${csp}">`,
     );
   }
-}
-
-function slugify(name: string): string {
-  return (
-    name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "export"
-  );
-}
-
-function dateStamp(): string {
-  const d = new Date();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${mm}-${dd}-${d.getFullYear()}`;
-}
-
-type ExportFormat = "csv" | "sql" | "json" | "jsonl";
-
-function formatForPath(filePath: string): ExportFormat {
-  switch (path.extname(filePath).toLowerCase()) {
-    case ".sql":
-      return "sql";
-    case ".json":
-      return "json";
-    case ".jsonl":
-    case ".ndjson":
-      return "jsonl";
-    default:
-      return "csv";
-  }
-}
-
-function serializeRows(
-  format: ExportFormat,
-  tableName: string,
-  rows: Iterable<{ columns: string[]; row: unknown[] }>,
-): string {
-  if (format === "json") {
-    const out: Record<string, unknown>[] = [];
-    for (const { columns, row } of rows) out.push(toJsonObject(columns, row));
-    return JSON.stringify(out, null, 2);
-  }
-
-  const lines: string[] = [];
-  let wroteHeader = false;
-  for (const { columns, row } of rows) {
-    if (format === "csv") {
-      if (!wroteHeader) {
-        wroteHeader = true;
-        lines.push(toCsvRow(columns));
-      }
-      lines.push(toCsvRow(row));
-    } else if (format === "sql") {
-      lines.push(toSqlInsert(tableName, columns, row));
-    } else {
-      lines.push(JSON.stringify(toJsonObject(columns, row)));
-    }
-  }
-  return lines.join(format === "csv" ? "\r\n" : "\n");
-}
-
-function toSqlInsert(table: string, columns: string[], row: unknown[]): string {
-  const cols = columns.map(quoteIdentifier).join(", ");
-  const vals = row.map(sqlLiteral).join(", ");
-  return `INSERT INTO ${quoteIdentifier(table)} (${cols}) VALUES (${vals});`;
-}
-
-function quoteIdentifier(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
-}
-
-function sqlLiteral(v: unknown): string {
-  if (v === null || v === undefined) return "NULL";
-  if (typeof v === "number") return String(v);
-  if (typeof v === "bigint") return v.toString();
-  if (typeof v === "boolean") return v ? "1" : "0";
-  if (v instanceof Uint8Array) return `X'${Buffer.from(v).toString("hex")}'`;
-  const s = typeof v === "string" ? v : JSON.stringify(v);
-  return `'${s.replace(/'/g, "''")}'`;
-}
-
-function toJsonObject(columns: string[], row: unknown[]): Record<string, unknown> {
-  const obj: Record<string, unknown> = {};
-  columns.forEach((c, i) => (obj[c] = jsonValue(row[i])));
-  return obj;
-}
-
-function jsonValue(v: unknown): unknown {
-  if (v === null || v === undefined) return null;
-  if (v instanceof Uint8Array) return Buffer.from(v).toString("base64");
-  if (typeof v === "bigint") {
-    const n = Number(v);
-    return Number.isSafeInteger(n) ? n : v.toString();
-  }
-  return v;
-}
-
-function toCsvRow(values: unknown[]): string {
-  return values.map(csvCell).join(",");
-}
-
-function csvCell(v: unknown): string {
-  if (v === null || v === undefined) return "";
-  if (v instanceof Uint8Array) return `[blob ${v.length} bytes]`;
-  const s =
-    typeof v === "string"
-      ? v
-      : typeof v === "number" || typeof v === "bigint" || typeof v === "boolean"
-        ? v.toString()
-        : JSON.stringify(v);
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 function getNonce(): string {

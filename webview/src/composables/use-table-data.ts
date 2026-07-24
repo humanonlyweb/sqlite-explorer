@@ -1,14 +1,24 @@
-import type { Filter, RowId, SortDir, TableQuery, TableSchema } from "@shared/protocol";
-import { computed, ref, shallowRef } from "vue";
+import type {
+  DeletePreview,
+  Filter,
+  RowId,
+  SortDir,
+  TableQuery,
+  TableSchema,
+  UndoOp,
+} from "@shared/protocol";
+import { computed, ref, shallowRef, watch } from "vue";
 
 import type { GridColumn } from "../types";
-import { isNumericType } from "../util";
+import { isNumericType, plural } from "../util";
 
-import { request, schema } from "./use-db";
+import { externalChangeCount, reloadCount, request, schema } from "./use-db";
 import { currentTable, useExplorer } from "./use-explorer";
 import { showToast } from "./use-toast";
+import { useUndo } from "./use-undo";
 
-const { takePendingFilter } = useExplorer();
+const { takePendingFilter, currentTableName, selectTable } = useExplorer();
+const { recordEdit, discardHistory, undoStep, redoStep, canUndo, canRedo } = useUndo();
 
 const page = ref(0);
 const pageSize = ref(1000);
@@ -51,12 +61,19 @@ function buildQuery(t: TableSchema, pageIndex: number): TableQuery {
   };
 }
 
+let loadSeq = 0;
+
 async function load(): Promise<void> {
   const t = currentTable.value;
   if (!t) return;
 
+  const seq = ++loadSeq;
   const query = buildQuery(t, page.value);
   const res = await request("tableData", (reqId) => ({ type: "getTableData", reqId, query }));
+
+  // A slow sort or filter can land after a newer request has already answered;
+  // applying it would show rows that don't match the visible page and controls.
+  if (seq !== loadSeq) return;
 
   if (res.error) {
     showToast(res.error, true);
@@ -118,6 +135,7 @@ async function commitEdit(rowIndex: number, column: string, value: string | null
     await load();
     return;
   }
+  recordEdit(res.undo, `edit to ${column}`);
   const ci = columns.value.findIndex((c) => c.name === column);
   if (ci >= 0) rows.value[rowIndex][ci] = value;
   rows.value = [...rows.value];
@@ -148,6 +166,7 @@ async function updateRow(
     await load();
     return false;
   }
+  recordEdit(res.undo, "row edit");
   const indexByName = new Map(columns.value.map((c, i) => [c.name, i]));
   for (const [name, v] of Object.entries(values)) {
     const ci = indexByName.get(name);
@@ -155,6 +174,20 @@ async function updateRow(
   }
   rows.value = [...rows.value];
   return true;
+}
+
+async function previewDelete(indexes: number[]): Promise<DeletePreview | null> {
+  const t = currentTable.value;
+  if (!t) return null;
+  const ids = indexes.map((i) => rowids.value[i]).filter((r): r is RowId => r != null);
+  if (ids.length === 0) return null;
+  const res = await request("deletePreview", (reqId) => ({
+    type: "previewDelete",
+    reqId,
+    table: t.name,
+    rowids: ids,
+  }));
+  return res.preview ?? null;
 }
 
 async function deleteRowsByIndex(indexes: number[]): Promise<void> {
@@ -174,7 +207,9 @@ async function deleteRowsByIndex(indexes: number[]): Promise<void> {
     return;
   }
 
-  showToast(`Deleted ${ids.length} row(s).`);
+  recordEdit(res.undo, `delete of ${ids.length} row(s)`);
+  const deleted = `Deleted ${plural(ids.length, "row")}.`;
+  showToast(res.undoUnavailable ? `${deleted} ${res.undoUnavailable}` : deleted);
   await load();
 }
 
@@ -193,6 +228,7 @@ async function insertRow(values: Record<string, string | null>): Promise<boolean
     showToast(res.error ?? "Insert failed", true);
     return false;
   }
+  recordEdit(res.undo, "row insert");
   showToast("Row inserted.");
   page.value = Math.max(0, Math.ceil((total.value + 1) / pageSize.value) - 1);
   await load();
@@ -218,6 +254,31 @@ async function exportCsv(selectedIndexes?: number[]): Promise<void> {
   if (res.ok && res.path) showToast(`Exported to ${res.path}`);
   else if (res.error) showToast(res.error, true);
 }
+
+async function applyHistory(stepFn: () => Promise<UndoOp | null>): Promise<void> {
+  const op = await stepFn();
+  if (!op) return;
+  if (op.table !== currentTableName.value) {
+    selectTable(op.table); // the currentTable watcher reloads for us
+    return;
+  }
+  await load();
+}
+
+function undoEdit(): Promise<void> {
+  return applyHistory(undoStep);
+}
+
+function redoEdit(): Promise<void> {
+  return applyHistory(redoStep);
+}
+
+watch(externalChangeCount, () => {
+  discardHistory();
+  void load();
+});
+
+watch(reloadCount, () => void load());
 
 function syncTable(): void {
   page.value = 0;
@@ -249,5 +310,10 @@ export function useTableData() {
     deleteRowsByIndex,
     insertRow,
     exportCsv,
+    previewDelete,
+    undoEdit,
+    redoEdit,
+    canUndo,
+    canRedo,
   };
 }

@@ -15,3 +15,7 @@ export function isNumericType(type: string): boolean {
 export function formatCount(n: number): string {
   return n.toLocaleString();
 }
+
+export function plural(n: number, noun: string): string {
+  return `${formatCount(n)} ${noun}${n === 1 ? "" : "s"}`;
+}

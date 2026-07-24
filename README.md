@@ -61,6 +61,15 @@ an Extension Development Host with the extension loaded).
   `Cmd/Ctrl+Enter` sets `NULL`.
 - **Full-row edit:** select a row and choose **Edit row** — handy for wide
   tables or JSON-heavy columns where inline editing is fiddly.
+- **Undo/redo:** `Cmd/Ctrl+Z` reverts the last grid edit, insert or delete;
+  `Cmd/Ctrl+Shift+Z` redoes it. Edits are written to disk immediately, so an
+  undo is a compensating write — it doesn't cover SQL run from the console.
+- **Structure tab** shows columns, foreign keys, indexes, and the original
+  `CREATE` statement.
+
+If another process writes to the database while it's open, the view reloads
+itself rather than showing stale rows (undo history is dropped at that point,
+since the rows it referred to may have moved).
 
 ## Settings
 
@@ -77,8 +86,14 @@ Requires [Bun](https://bun.sh) and VS Code.
 bun install        # install deps (better-sqlite3 ships prebuilt binaries — no compile step)
 bun run build      # bundle extension host (Rolldown) + webview (Vite)
 bun run typecheck  # tsc for the extension host + vue-tsc for the webview SFCs
+bun run test       # node:test — escaping, export formats, undo round-trip
 bun run lint       # oxlint
 ```
+
+`sample.db` is the fixture used for screenshots and manual testing. It carries
+deliberate edge cases: titles containing `%`, `_`, quotes, commas and newlines;
+NULLs and BLOBs; integers past 2^53; and a `WITHOUT ROWID` table that the grid
+must show as read-only.
 
 `webview/` is a Bun workspace, so a single `bun install` at the repo root covers
 both packages — there is no second install step.

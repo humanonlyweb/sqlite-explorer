@@ -5,6 +5,9 @@ import { formatCount } from "../util";
 
 import { request } from "./use-db";
 import { showToast } from "./use-toast";
+import { useUndo } from "./use-undo";
+
+const { discardHistory } = useUndo();
 
 // Module-scoped so the query text and results survive tab switches.
 const sqlText = ref("");
@@ -50,6 +53,8 @@ async function run(): Promise<void> {
       rows.value = [];
       status.value = `Done. ${res.rowsAffected ?? 0} row(s) affected.`;
       canExport.value = false;
+      // Arbitrary SQL can drop or renumber the rows the history addresses.
+      discardHistory();
     }
   } finally {
     running.value = false;

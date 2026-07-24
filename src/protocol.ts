@@ -26,6 +26,7 @@ export interface TableSchema {
   indexes: IndexInfo[];
   hasRowId: boolean;
   rowCount: number;
+  ddl: string | null; // original CREATE statement from sqlite_master
 }
 
 export interface DatabaseSchema {
@@ -52,6 +53,25 @@ export interface TableQuery {
 
 export type RowId = number | string;
 
+export type CellWire = string | number | null | { blob: string };
+
+export interface DeletePreview {
+  direct: number;
+  collateral: number; // rows other tables lose or have nulled by cascade/trigger
+  tables: string[];
+}
+
+export interface RowSnapshot {
+  rowid: RowId;
+  values: Record<string, CellWire>;
+}
+
+export type UndoOp =
+  | { kind: "updateCell"; table: string; rowid: RowId; column: string; value: CellWire }
+  | { kind: "updateRow"; table: string; rowid: RowId; values: Record<string, CellWire> }
+  | { kind: "deleteRows"; table: string; rowids: RowId[] }
+  | { kind: "restoreRows"; table: string; rows: RowSnapshot[] };
+
 // ---- Webview -> Host ----------------------------------------------------
 
 export type InboundMessage =
@@ -64,17 +84,19 @@ export type InboundMessage =
       table: string;
       rowid: RowId;
       column: string;
-      value: string | null;
+      value: CellWire;
     }
   | {
       type: "updateRow";
       reqId: number;
       table: string;
       rowid: RowId;
-      values: Record<string, string | null>;
+      values: Record<string, CellWire>;
     }
-  | { type: "insertRow"; reqId: number; table: string; values: Record<string, string | null> }
+  | { type: "insertRow"; reqId: number; table: string; values: Record<string, CellWire> }
   | { type: "deleteRows"; reqId: number; table: string; rowids: RowId[] }
+  | { type: "previewDelete"; reqId: number; table: string; rowids: RowId[] }
+  | { type: "applyUndo"; reqId: number; op: UndoOp }
   | { type: "exportCsv"; reqId: number; query: TableQuery; rowids?: RowId[] }
   | { type: "exportQueryCsv"; reqId: number; sql: string }
   | { type: "refresh" };
@@ -105,7 +127,18 @@ export type OutboundMessage =
       truncated?: boolean;
       error?: string;
     }
-  | { type: "mutationResult"; reqId: number; ok: boolean; error?: string }
+  | {
+      type: "mutationResult";
+      reqId: number;
+      ok: boolean;
+      error?: string;
+      undo?: UndoOp;
+      // Set when the write succeeded but can't be reversed, with the reason why.
+      undoUnavailable?: string;
+    }
+  | { type: "deletePreview"; reqId: number; preview?: DeletePreview; error?: string }
   | { type: "exportResult"; reqId: number; ok: boolean; path?: string; error?: string }
+  // A row write landed and only this table's count moved; the schema is unchanged.
+  | { type: "rowCount"; table: string; count: number }
   | { type: "reloaded"; schema: DatabaseSchema }
-  | { type: "fatal"; message: string };
+  | { type: "externalChange"; schema: DatabaseSchema };
