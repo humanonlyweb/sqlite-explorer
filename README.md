@@ -76,6 +76,7 @@ Requires [Bun](https://bun.sh) and VS Code.
 ```bash
 bun install        # install deps (better-sqlite3 ships prebuilt binaries — no compile step)
 bun run build      # bundle extension host (Rolldown) + webview (Vite)
+bun run typecheck  # tsc for the extension host + vue-tsc for the webview SFCs
 bun run lint       # oxlint
 ```
 
@@ -83,7 +84,8 @@ bun run lint       # oxlint
 both packages — there is no second install step.
 
 > [!NOTE]
-> I removed `vue-tsc` because at the moment, it doesn't work well with Typescript 7. Tracking [the issue](https://github.com/vuejs/language-tools/issues/5381).
+> `vue-tsc` works under TypeScript 7 via
+> [typescript-native-bridge](https://github.com/johnsoncodehk/typescript-native-bridge).
 
 Press **F5** to launch the Extension Development Host. Iterating on the webview:
 `bun run watch:web` (Vite) alongside `bun run watch` (extension host).

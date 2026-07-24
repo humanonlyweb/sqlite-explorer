@@ -34,7 +34,9 @@
     "watch": "node rolldown.build.ts --watch",
     "watch:web": "bun run --filter @sqlite-explorer/webview watch",
     "package": "node scripts/package.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bun run typecheck:ext && bun run typecheck:web",
+    "typecheck:ext": "tsc --noEmit",
+    "typecheck:web": "bun run --filter @sqlite-explorer/webview typecheck",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "oxfmt",
@@ -56,7 +58,10 @@
     "oxlint-tsgolint": "^7.0.2001",
     "rolldown": "^1.2.0",
     "simple-git-hooks": "^2.13.1",
-    "typescript": "^7.0.2"
+    "typescript": "npm:typescript-native-bridge@6.0.3-bridge.6.tsgo.7.0.2"
+  },
+  "overrides": {
+    "typescript": "npm:typescript-native-bridge@6.0.3-bridge.6.tsgo.7.0.2"
   },
   "simple-git-hooks": {
     "pre-commit": "bunx nano-staged"
