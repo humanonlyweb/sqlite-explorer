@@ -6,11 +6,16 @@ import {
   dateStamp,
   formatForPath,
   jsonValue,
-  serializeRows,
+  serializeChunks,
   slugify,
   sqlLiteral,
   toCsvRow,
+  type ExportFormat,
+  type ExportRow,
 } from "./serialize.ts";
+
+const serializeRows = (format: ExportFormat, table: string, rows: ExportRow[]): string =>
+  [...serializeChunks(format, table, rows)].join("");
 
 test("csvCell quotes only when the value would otherwise break the row", () => {
   assert.equal(csvCell(null), "");
@@ -73,6 +78,20 @@ test("serializeRows emits a single array for json", () => {
     { id: 1, name: "Ada" },
     { id: 2, name: 'Bob "The Comma", Jr' },
   ]);
+});
+
+test("chunked json output is byte-identical to a buffered JSON.stringify", () => {
+  assert.equal(
+    serializeRows("json", "people", ROWS),
+    JSON.stringify(
+      [
+        { id: 1, name: "Ada" },
+        { id: 2, name: 'Bob "The Comma", Jr' },
+      ],
+      null,
+      2,
+    ),
+  );
 });
 
 test("serializeRows quotes identifiers and values in SQL inserts", () => {

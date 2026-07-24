@@ -38,33 +38,41 @@ export function dateStamp(d: Date = new Date()): string {
   return `${mm}-${dd}-${d.getFullYear()}`;
 }
 
-export function serializeRows(
+export function* serializeChunks(
   format: ExportFormat,
   tableName: string,
   rows: Iterable<ExportRow>,
-): string {
+): Generator<string> {
   if (format === "json") {
-    const out: Record<string, unknown>[] = [];
-    for (const { columns, row } of rows) out.push(toJsonObject(columns, row));
-    return JSON.stringify(out, null, 2);
+    yield* jsonArrayChunks(rows);
+    return;
   }
 
-  const lines: string[] = [];
-  let wroteHeader = false;
+  const separator = format === "csv" ? "\r\n" : "\n";
+  let wrote = false;
   for (const { columns, row } of rows) {
-    if (format === "csv") {
-      if (!wroteHeader) {
-        wroteHeader = true;
-        lines.push(toCsvRow(columns));
-      }
-      lines.push(toCsvRow(row));
-    } else if (format === "sql") {
-      lines.push(toSqlInsert(tableName, columns, row));
-    } else {
-      lines.push(JSON.stringify(toJsonObject(columns, row)));
+    if (format === "csv" && !wrote) {
+      yield toCsvRow(columns);
+      wrote = true;
     }
+    if (wrote) yield separator;
+    wrote = true;
+    yield format === "csv"
+      ? toCsvRow(row)
+      : format === "sql"
+        ? toSqlInsert(tableName, columns, row)
+        : JSON.stringify(toJsonObject(columns, row));
   }
-  return lines.join(format === "csv" ? "\r\n" : "\n");
+}
+
+function* jsonArrayChunks(rows: Iterable<ExportRow>): Generator<string> {
+  let wrote = false;
+  for (const { columns, row } of rows) {
+    yield wrote ? ",\n" : "[\n";
+    wrote = true;
+    yield JSON.stringify(toJsonObject(columns, row), null, 2).replace(/^/gm, "  ");
+  }
+  yield wrote ? "\n]" : "[]";
 }
 
 export function toSqlInsert(table: string, columns: string[], row: unknown[]): string {

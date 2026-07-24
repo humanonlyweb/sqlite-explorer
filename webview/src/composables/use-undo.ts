@@ -53,7 +53,11 @@ async function step(
 
   from.value = from.value.slice(0, -1);
   if (res.undo) to.value = [...to.value, { op: res.undo, label: entry.label }];
-  showToast(`${verb} ${entry.label}.`);
+  showToast(
+    res.undoUnavailable
+      ? `${verb} ${entry.label}. ${res.undoUnavailable}`
+      : `${verb} ${entry.label}.`,
+  );
   return entry.op;
 }
 
