@@ -18,6 +18,7 @@ let reqSeq = 0;
 const pending = new Map<number, ResponseHandler>();
 
 export const schema = shallowRef<DatabaseSchema | null>(null);
+export const externalChangeCount = shallowRef(0);
 
 function isResponse<K extends OutboundMessage["type"]>(
   msg: OutboundMessage,
@@ -62,6 +63,11 @@ export function initBridge(): void {
       case "init":
       case "reloaded":
         schema.value = msg.schema;
+        break;
+      case "externalChange":
+        schema.value = msg.schema;
+        externalChangeCount.value++;
+        showToast("Database was modified outside the editor — reloaded.");
         break;
       case "fatal":
         showToast(msg.message, true);

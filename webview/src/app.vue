@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, watch } from "vue";
+import { onBeforeUnmount, onMounted, watch } from "vue";
 
 import DataView from "./components/data-view.vue";
 import Sidebar from "./components/sidebar.vue";
@@ -8,8 +8,10 @@ import StructureView from "./components/structure-view.vue";
 import ToastHost from "./components/toast-host.vue";
 import { initBridge, schema } from "./composables/use-db";
 import { useExplorer, type TabId } from "./composables/use-explorer";
+import { useTableData } from "./composables/use-table-data";
 
 const { currentTab, currentTableName, currentTable } = useExplorer();
+const { undoEdit, redoEdit } = useTableData();
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: "data", label: "Data", icon: "codicon-table" },
@@ -25,6 +27,26 @@ watch(schema, (s) => {
     if (first) currentTableName.value = first.name;
   }
 });
+
+function onKeydown(e: KeyboardEvent): void {
+  if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "z") return;
+
+  const el = document.activeElement;
+  if (
+    el instanceof HTMLInputElement ||
+    el instanceof HTMLTextAreaElement ||
+    (el instanceof HTMLElement && el.isContentEditable)
+  ) {
+    return;
+  }
+  if (schema.value?.readOnly) return;
+
+  e.preventDefault();
+  void (e.shiftKey ? redoEdit() : undoEdit());
+}
+
+onMounted(() => window.addEventListener("keydown", onKeydown));
+onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 </script>
 
 <template>

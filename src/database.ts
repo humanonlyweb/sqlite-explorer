@@ -3,26 +3,26 @@ import { createRequire } from "node:module";
 import type BetterSqlite3 from "better-sqlite3";
 
 import type {
+  CellWire,
   ColumnInfo,
   DatabaseSchema,
+  DeletePreview,
   ForeignKey,
   IndexInfo,
   ResultSet,
   RowId,
+  RowSnapshot,
   TableQuery,
   TableSchema,
-} from "./protocol";
+  UndoOp,
+} from "./protocol.ts";
+import { bindCell, likePattern, quoteId, wireCell, wireValue } from "./sql.ts";
 
 const ROWID_ALIAS = "__sqlite_explorer_rowid__";
 
 const MAX_QUERY_ROWS = 10_000;
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const MIN_SAFE = BigInt(Number.MIN_SAFE_INTEGER);
-
-function wireValue(v: unknown): unknown {
-  if (typeof v !== "bigint") return v;
-  return v <= MAX_SAFE && v >= MIN_SAFE ? Number(v) : v.toString();
-}
 
 function wireRow(row: unknown[]): unknown[] {
   return row.map(wireValue);
@@ -64,16 +64,13 @@ function loadDriver(): typeof BetterSqlite3 {
   );
 }
 
-function quoteId(name: string): string {
-  return '"' + name.replace(/"/g, '""') + '"';
-}
-
 // Shapes returned by the PRAGMA/introspection statements we run. Declaring them
 // lets us use better-sqlite3's `prepare<Bind, Result>` generics so results are
 // typed at the source, with no `as` assertions.
 interface MasterRow {
   name: string;
   type: "table" | "view";
+  sql: string | null;
 }
 interface PragmaColumn {
   name: string;
@@ -124,7 +121,7 @@ export class SqliteDatabase {
   readSchema(fileName: string): DatabaseSchema {
     const objects = this.db
       .prepare<[], MasterRow>(
-        `SELECT name, type FROM sqlite_master
+        `SELECT name, type, sql FROM sqlite_master
          WHERE type IN ('table','view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
          ORDER BY type, name`,
       )
@@ -134,11 +131,18 @@ export class SqliteDatabase {
       fileName,
       filePath: this.filePath,
       readOnly: this.readOnly,
-      tables: objects.map((o) => this.readTableSchema(o.name, o.type)),
+      tables: objects.map((o) => this.readTableSchema(o.name, o.type, o.sql)),
     };
   }
 
-  private readTableSchema(name: string, kind: "table" | "view"): TableSchema {
+  dataVersion(): number {
+    const v: unknown = this.db.pragma("data_version", { simple: true });
+    // A constant fallback degrades to "never changed" rather than to a refresh
+    // loop, which is what a sentinel like NaN would cause.
+    return typeof v === "number" ? v : 0;
+  }
+
+  private readTableSchema(name: string, kind: "table" | "view", ddl: string | null): TableSchema {
     const columns: ColumnInfo[] = this.db
       .prepare<[], PragmaColumn>(`PRAGMA table_info(${quoteId(name)})`)
       .all()
@@ -184,7 +188,7 @@ export class SqliteDatabase {
       rowCount = -1; // unknown (e.g. a view over a missing table)
     }
 
-    return { name, kind, columns, foreignKeys, indexes, hasRowId, rowCount };
+    return { name, kind, columns, foreignKeys, indexes, hasRowId, rowCount, ddl };
   }
 
   private tableHasRowId(name: string): boolean {
@@ -205,8 +209,9 @@ export class SqliteDatabase {
     const valid = filters.filter((f) => f.value !== "");
     if (valid.length === 0) return { clause: "", params: [] };
     const clause =
-      " WHERE " + valid.map((f) => `CAST(${quoteId(f.column)} AS TEXT) LIKE ?`).join(" AND ");
-    const params = valid.map((f) => `%${f.value}%`);
+      " WHERE " +
+      valid.map((f) => `CAST(${quoteId(f.column)} AS TEXT) LIKE ? ESCAPE '\\'`).join(" AND ");
+    const params = valid.map((f) => likePattern(f.value));
     return { clause, params };
   }
 
@@ -337,46 +342,198 @@ export class SqliteDatabase {
     }
   }
 
-  updateCell(table: string, rowid: RowId, column: string, value: string | null): void {
-    this.assertWritable();
-    this.db
-      .prepare(`UPDATE ${quoteId(table)} SET ${quoteId(column)} = ? WHERE rowid = ?`)
-      .run(value, bindRowId(rowid));
+  private snapshotRows(table: string, rowids: RowId[]): RowSnapshot[] {
+    if (rowids.length === 0) return [];
+    const inList = rowids.map(() => "?").join(", ");
+    const stmt = this.db
+      .prepare<unknown[], unknown[]>(
+        `SELECT rowid AS ${ROWID_ALIAS}, * FROM ${quoteId(table)} WHERE rowid IN (${inList})`,
+      )
+      .raw(true)
+      .safeIntegers(true);
+
+    const cols = stmt.columns().map((c) => c.name);
+    const snapshots: RowSnapshot[] = [];
+
+    for (const row of stmt.all(...rowids.map(bindRowId))) {
+      const rowid = wireRowId(row[0]);
+      if (rowid === null) continue;
+
+      const values: Record<string, CellWire> = {};
+
+      cols.forEach((c, i) => {
+        if (c !== ROWID_ALIAS) values[c] = wireCell(row[i]);
+      });
+      snapshots.push({ rowid, values });
+    }
+    return snapshots;
   }
 
-  updateRow(table: string, rowid: RowId, values: Record<string, string | null>): void {
+  updateCell(table: string, rowid: RowId, column: string, value: CellWire): UndoOp {
+    this.assertWritable();
+    const before = this.db
+      .prepare(`SELECT ${quoteId(column)} FROM ${quoteId(table)} WHERE rowid = ?`)
+      .pluck(true)
+      .safeIntegers(true)
+      .get(bindRowId(rowid));
+    this.db
+      .prepare(`UPDATE ${quoteId(table)} SET ${quoteId(column)} = ? WHERE rowid = ?`)
+      .run(bindCell(value), bindRowId(rowid));
+    return { kind: "updateCell", table, rowid, column, value: wireCell(before) };
+  }
+
+  updateRow(table: string, rowid: RowId, values: Record<string, CellWire>): UndoOp {
     this.assertWritable();
     const cols = Object.keys(values);
-    if (cols.length === 0) return;
+    if (cols.length === 0) return { kind: "updateRow", table, rowid, values: {} };
+
+    const [snapshot] = this.snapshotRows(table, [rowid]);
+    const before: Record<string, CellWire> = {};
+    for (const c of cols) before[c] = snapshot?.values[c] ?? null;
+
     const assignments = cols.map((c) => `${quoteId(c)} = ?`).join(", ");
     this.db
       .prepare(`UPDATE ${quoteId(table)} SET ${assignments} WHERE rowid = ?`)
-      .run(...cols.map((c) => values[c]), bindRowId(rowid));
+      .run(...cols.map((c) => bindCell(values[c])), bindRowId(rowid));
+    return { kind: "updateRow", table, rowid, values: before };
   }
 
-  insertRow(table: string, values: Record<string, string | null>): void {
+  insertRow(table: string, values: Record<string, CellWire>): UndoOp {
     this.assertWritable();
     const cols = Object.keys(values);
-    if (cols.length === 0) {
-      this.db.prepare(`INSERT INTO ${quoteId(table)} DEFAULT VALUES`).run();
-      return;
-    }
-    const placeholders = cols.map(() => "?").join(", ");
-    const columnList = cols.map(quoteId).join(", ");
-    this.db
-      .prepare(`INSERT INTO ${quoteId(table)} (${columnList}) VALUES (${placeholders})`)
-      .run(...cols.map((c) => values[c]));
+    const info =
+      cols.length === 0
+        ? this.db.prepare(`INSERT INTO ${quoteId(table)} DEFAULT VALUES`).run()
+        : this.db
+            .prepare(
+              `INSERT INTO ${quoteId(table)} (${cols.map(quoteId).join(", ")}) VALUES (${cols
+                .map(() => "?")
+                .join(", ")})`,
+            )
+            .run(...cols.map((c) => bindCell(values[c])));
+    const rowid = wireRowId(info.lastInsertRowid);
+    return { kind: "deleteRows", table, rowids: rowid === null ? [] : [rowid] };
   }
 
-  deleteRows(table: string, rowids: RowId[]): number {
+  /** Tables reachable from `target` by following foreign keys inward, transitively. */
+  private dependentTables(target: string): string[] {
+    const names = this.db
+      .prepare<[], { name: string }>(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'`,
+      )
+      .all()
+      .map((r) => r.name);
+
+    const children = new Map<string, string[]>();
+    for (const t of names) {
+      for (const fk of this.db
+        .prepare<[], { table: string }>(`PRAGMA foreign_key_list(${quoteId(t)})`)
+        .all()) {
+        children.set(fk.table, [...(children.get(fk.table) ?? []), t]);
+      }
+    }
+
+    const seen = new Set<string>();
+    const queue = [target];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (current === undefined) break;
+      for (const child of children.get(current) ?? []) {
+        if (child === target || seen.has(child)) continue;
+        seen.add(child);
+        queue.push(child);
+      }
+    }
+    return [...seen];
+  }
+
+  /**
+   * Counts what a delete would touch by performing it and rolling back, so the
+   * confirmation can warn about cascades before anything is written.
+   */
+  previewDelete(table: string, rowids: RowId[]): DeletePreview {
+    if (this.readOnly || rowids.length === 0) return { direct: 0, collateral: 0, tables: [] };
+
+    const del = this.db.prepare(`DELETE FROM ${quoteId(table)} WHERE rowid = ?`);
+    let direct = 0;
+    let collateral = 0;
+    const before = this.totalChanges();
+
+    this.db.exec("BEGIN");
+    try {
+      for (const id of rowids) direct += del.run(bindRowId(id)).changes;
+      collateral = this.totalChanges() - before - direct;
+    } finally {
+      this.db.exec("ROLLBACK");
+    }
+
+    return { direct, collateral, tables: collateral > 0 ? this.dependentTables(table) : [] };
+  }
+
+  /** Rows changed on this connection since it opened, including cascades and triggers. */
+  private totalChanges(): number {
+    const n: unknown = this.db.prepare("SELECT total_changes() AS n").pluck(true).get();
+    return typeof n === "number" ? n : 0;
+  }
+
+  /**
+   * `undo` is omitted when the delete reached rows we didn't snapshot — an
+   * `ON DELETE CASCADE` or a delete trigger. Restoring only the rows we captured
+   * would look successful while leaving the cascaded ones gone for good, so we
+   * decline to offer undo rather than offer a lossy one.
+   */
+  deleteRows(table: string, rowids: RowId[]): { changes: number; undo?: UndoOp } {
     this.assertWritable();
-    if (rowids.length === 0) return 0;
+    if (rowids.length === 0) {
+      return { changes: 0, undo: { kind: "restoreRows", table, rows: [] } };
+    }
+    const snapshots = this.snapshotRows(table, rowids);
     const del = this.db.prepare(`DELETE FROM ${quoteId(table)} WHERE rowid = ?`);
     const tx = this.db.transaction((ids: RowId[]) => {
       let n = 0;
       for (const id of ids) n += del.run(bindRowId(id)).changes;
       return n;
     });
-    return tx(rowids);
+
+    const before = this.totalChanges();
+    const changes = tx(rowids);
+    const collateral = this.totalChanges() - before - changes;
+
+    if (collateral > 0) return { changes };
+    return { changes, undo: { kind: "restoreRows", table, rows: snapshots } };
+  }
+
+  restoreRows(table: string, rows: RowSnapshot[]): UndoOp {
+    this.assertWritable();
+    const tx = this.db.transaction((batch: RowSnapshot[]) => {
+      for (const { rowid, values } of batch) {
+        const cols = Object.keys(values);
+        const columnList = ["rowid", ...cols].map(quoteId).join(", ");
+        const placeholders = Array.from({ length: cols.length + 1 }, () => "?").join(", ");
+        this.db
+          .prepare(`INSERT INTO ${quoteId(table)} (${columnList}) VALUES (${placeholders})`)
+          .run(bindRowId(rowid), ...cols.map((c) => bindCell(values[c])));
+      }
+    });
+    tx(rows);
+    return { kind: "deleteRows", table, rowids: rows.map((r) => r.rowid) };
+  }
+
+  /**
+   * Applies an inverse operation and returns the inverse of *that*, giving redo.
+   * Undefined when the applied operation cascaded and so can't itself be reversed.
+   */
+  applyUndo(op: UndoOp): UndoOp | undefined {
+    switch (op.kind) {
+      case "updateCell":
+        return this.updateCell(op.table, op.rowid, op.column, op.value);
+      case "updateRow":
+        return this.updateRow(op.table, op.rowid, op.values);
+      case "deleteRows":
+        return this.deleteRows(op.table, op.rowids).undo;
+      default:
+        return this.restoreRows(op.table, op.rows);
+    }
   }
 }

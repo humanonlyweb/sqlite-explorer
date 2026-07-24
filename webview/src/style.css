@@ -526,6 +526,22 @@ table.meta th {
   font-weight: 600;
 }
 
+pre.ddl {
+  max-width: 900px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 2;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.1));
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  border-radius: 4px;
+  user-select: text;
+}
+
 .pill {
   display: inline-block;
   padding: 0 6px;

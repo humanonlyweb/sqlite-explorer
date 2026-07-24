@@ -1,9 +1,10 @@
 <script setup lang="ts">
+import type { DeletePreview } from "@shared/protocol";
 import { computed, onMounted, ref, watch } from "vue";
 
 import { useExplorer } from "../composables/use-explorer";
 import { useTableData } from "../composables/use-table-data";
-import { formatCount } from "../util";
+import { formatCount, plural } from "../util";
 
 import DataGrid from "./data-grid.vue";
 import ConfirmDialog from "./dialog/confirm.vue";
@@ -32,6 +33,11 @@ const {
   deleteRowsByIndex,
   insertRow,
   exportCsv,
+  previewDelete,
+  undoEdit,
+  redoEdit,
+  canUndo,
+  canRedo,
 } = useTableData();
 
 onMounted(() => void load());
@@ -43,6 +49,7 @@ const selectedIndexes = ref<number[]>([]);
 const showInsert = ref(false);
 const inserting = ref(false);
 const showDeleteConfirm = ref(false);
+const deletePreview = ref<DeletePreview | null>(null);
 const showEdit = ref(false);
 const editing = ref(false);
 
@@ -62,6 +69,26 @@ const rangeLabel = computed(() => {
   const from = total.value === 0 ? 0 : page.value * pageSize.value + 1;
   const to = Math.min(total.value, (page.value + 1) * pageSize.value);
   return `${formatCount(from)}–${formatCount(to)} of ${formatCount(total.value)}`;
+});
+
+// The confirmation has to state the real blast radius, so ask the host to dry-run
+// the delete first — cascades and triggers can reach rows the grid never showed.
+async function openDeleteConfirm(): Promise<void> {
+  deletePreview.value = null;
+  showDeleteConfirm.value = true;
+  deletePreview.value = await previewDelete(selectedIndexes.value);
+}
+
+const deleteDescription = computed(() => {
+  const n = selectedIndexes.value.length;
+  const preview = deletePreview.value;
+  const head = `Permanently delete ${plural(n, "row")}?`;
+  if (!preview) return `${head} This writes to the database immediately.`;
+  if (preview.collateral > 0) {
+    const where = preview.tables.length ? ` in ${preview.tables.join(", ")}` : "";
+    return `${head} This also removes or clears ${plural(preview.collateral, "related row")}${where}, and cannot be undone.`;
+  }
+  return `${head} This writes to the database immediately, but you can undo it with Cmd/Ctrl+Z.`;
 });
 
 async function onDeleteConfirmed(): Promise<void> {
@@ -103,7 +130,7 @@ async function onInsert(values: Record<string, string | null>): Promise<void> {
         <button
           class="secondary"
           :disabled="selectedIndexes.length === 0"
-          @click="showDeleteConfirm = true"
+          @click="openDeleteConfirm"
         >
           <i class="codicon codicon-trash" aria-hidden="true"></i>
           {{ selectedIndexes.length ? `Delete (${selectedIndexes.length})` : "Delete" }}
@@ -124,6 +151,24 @@ async function onInsert(values: Record<string, string | null>): Promise<void> {
         {{ selectedIndexes.length ? `Export selected (${selectedIndexes.length})` : "Export" }}
       </button>
       <div class="spacer"></div>
+      <template v-if="editable">
+        <button
+          class="secondary"
+          :disabled="!canUndo"
+          title="Undo the last edit (Cmd/Ctrl+Z)"
+          @click="undoEdit"
+        >
+          <i class="codicon codicon-discard" aria-hidden="true"></i>Undo
+        </button>
+        <button
+          class="secondary"
+          :disabled="!canRedo"
+          title="Redo the last undone edit (Cmd/Ctrl+Shift+Z)"
+          @click="redoEdit"
+        >
+          <i class="codicon codicon-redo" aria-hidden="true"></i>Redo
+        </button>
+      </template>
     </div>
 
     <DataGrid
@@ -171,9 +216,7 @@ async function onInsert(values: Record<string, string | null>): Promise<void> {
     <ConfirmDialog
       v-model:open="showDeleteConfirm"
       title="Delete rows?"
-      :description="`Permanently delete ${selectedIndexes.length} row${
-        selectedIndexes.length === 1 ? '' : 's'
-      }? This writes to the database immediately and can't be undone.`"
+      :description="deleteDescription"
       confirm-text="Delete"
       danger
       @confirm="onDeleteConfirmed"

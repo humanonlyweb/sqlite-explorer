@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 
-import { SqliteEditorProvider } from "./sqliteEditorProvider";
+import { SqliteEditorProvider } from "./sqliteEditorProvider.ts";
 
 export function activate(context: vscode.ExtensionContext): void {
   const provider = new SqliteEditorProvider(context);

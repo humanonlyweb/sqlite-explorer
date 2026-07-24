@@ -1,7 +1,7 @@
 {
   "name": "sqlite-explorer",
   "displayName": "SQLite Explorer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Browse, query, and edit SQLite databases directly in VS Code.",
   "categories": [
     "Data Science",
@@ -15,11 +15,16 @@
     "sqlite",
     "viewer"
   ],
+  "homepage": "https://github.com/humanonlyweb/sqlite-explorer#readme",
+  "bugs": {
+    "url": "https://github.com/humanonlyweb/sqlite-explorer/issues"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/humanonlyweb/sqlite-explorer.git"
   },
+  "qna": "https://github.com/humanonlyweb/sqlite-explorer/discussions",
   "publisher": "HumanOnlyWeb",
   "workspaces": [
     "webview"
@@ -34,6 +39,7 @@
     "watch": "node rolldown.build.ts --watch",
     "watch:web": "bun run --filter @sqlite-explorer/webview watch",
     "package": "node scripts/package.mjs",
+    "test": "node --test src/*.test.ts",
     "typecheck": "bun run typecheck:ext && bun run typecheck:web",
     "typecheck:ext": "tsc --noEmit",
     "typecheck:web": "bun run --filter @sqlite-explorer/webview typecheck",

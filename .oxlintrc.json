@@ -21,5 +21,14 @@
     "eqeqeq": ["error", "smart"],
     "unicorn/require-post-message-target-origin": "off"
   },
+  "overrides": [
+    {
+      "files": ["**/*.test.ts"],
+      "rules": {
+        // node:test's `test()` returns a promise that sync tests are meant to ignore.
+        "typescript/no-floating-promises": "off"
+      }
+    }
+  ],
   "ignorePatterns": ["dist/**", "node_modules/**"]
 }
