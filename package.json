@@ -21,15 +21,18 @@
     "url": "https://github.com/humanonlyweb/sqlite-explorer.git"
   },
   "publisher": "HumanOnlyWeb",
+  "workspaces": [
+    "webview"
+  ],
   "type": "module",
   "main": "./dist/extension.js",
   "scripts": {
     "vscode:prepublish": "bun run build",
     "build": "bun run build:ext && bun run build:web",
     "build:ext": "node rolldown.build.ts --production",
-    "build:web": "cd webview && bun run build",
+    "build:web": "bun run --filter @sqlite-explorer/webview build",
     "watch": "node rolldown.build.ts --watch",
-    "watch:web": "cd webview && bun run watch",
+    "watch:web": "bun run --filter @sqlite-explorer/webview watch",
     "package": "node scripts/package.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",

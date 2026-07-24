@@ -1,5 +1,5 @@
 {
-  "name": "webview",
+  "name": "@sqlite-explorer/webview",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -17,7 +17,7 @@
     "@types/node": "^26.1.1",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/tsconfig": "^0.9.1",
-    "typescript": "~7.0.2",
+    "typescript": "^7.0.2",
     "vite": "^8.1.5"
   }
 }

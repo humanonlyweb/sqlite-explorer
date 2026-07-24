@@ -9,6 +9,12 @@ if (!process.env.SQLITE_EXPLORER_PACKAGING) {
   rmSync("dist/better-sqlite3", { recursive: true, force: true });
 }
 
+// A production build emits no sourcemap, so a map left over from a previous
+// `--watch` run would otherwise survive in dist/ as stale output.
+if (production) {
+  rmSync("dist/extension.js.map", { force: true });
+}
+
 const input: InputOptions = {
   input: "src/extension.ts",
   platform: "node",

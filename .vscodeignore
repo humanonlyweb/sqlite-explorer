@@ -13,10 +13,12 @@ tsconfig.json
 .oxfmtrc.json
 .gitignore
 bun.lock
+bunfig.toml
 release/**
-**/*.map
 **/*.ts
 !dist/**
+
+**/*.map
 
 # test databases & artifacts
 *.db

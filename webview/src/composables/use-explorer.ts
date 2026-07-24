@@ -15,6 +15,10 @@ export const currentTable = computed<TableSchema | undefined>(() =>
 
 function selectTable(name: string): void {
   pendingFilter = null;
+  // Data and Structure both re-render for the new table, but the SQL console is a
+  // global scratchpad — selecting a table while it's open would change nothing on
+  // screen. The query text survives the switch, so returning to SQL is lossless.
+  if (currentTab.value === "sql") currentTab.value = "data";
   currentTableName.value = name;
 }
 

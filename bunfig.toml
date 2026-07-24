@@ -1,0 +1,8 @@
+[install]
+# Bun switches to the isolated linker as soon as `workspaces` is declared, which
+# puts every package behind `node_modules/.bun/<name>@<version>/`. Two things
+# here depend on the flat layout: simple-git-hooks' postinstall (it resolves its
+# own package.json by walking up from the module and throws under isolated), and
+# scripts/package.mjs, which vendors `node_modules/better-sqlite3/prebuilds` into
+# the VSIX. Staying hoisted keeps both working exactly as they did pre-workspace.
+linker = "hoisted"

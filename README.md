@@ -79,6 +79,9 @@ bun run build      # bundle extension host (Rolldown) + webview (Vite)
 bun run lint       # oxlint
 ```
 
+`webview/` is a Bun workspace, so a single `bun install` at the repo root covers
+both packages — there is no second install step.
+
 > [!NOTE]
 > I removed `vue-tsc` because at the moment, it doesn't work well with Typescript 7. Tracking [the issue](https://github.com/vuejs/language-tools/issues/5381).
 
@@ -89,9 +92,13 @@ Press **F5** to launch the Extension Development Host. Iterating on the webview:
 
 ```
 src/            extension host — DB engine, custom editor, message protocol
-webview/        Vue 3 + Vite app 🔥 → dist/webview/
+webview/        Vue 3 + Vite app 🔥 (workspace) → dist/webview/
 dist/           build output (extension.js + webview/)
 ```
+
+Dependencies are installed flat into the root `node_modules/` — `bunfig.toml`
+pins Bun's `hoisted` linker, which the packaging script relies on to vendor the
+`better-sqlite3` prebuild.
 
 The webview talks to the host over a typed `postMessage` protocol
 (`src/protocol.ts`, shared via the `@shared` alias). `better-sqlite3` is a

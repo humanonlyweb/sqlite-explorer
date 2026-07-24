@@ -2,18 +2,19 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "type": "npm",
-      "script": "build",
+      "type": "shell",
+      "command": "bun run build",
       "problemMatcher": [],
-      "label": "npm: build",
-      "detail": "Bundle the extension and webview with esbuild"
+      "label": "bun: build",
+      "detail": "Bundle the extension (Rolldown) and webview (Vite) into dist/"
     },
     {
-      "type": "npm",
-      "script": "watch",
+      "type": "shell",
+      "command": "bun run watch",
       "problemMatcher": [],
-      "label": "npm: watch",
-      "isBackground": true
+      "label": "bun: watch",
+      "isBackground": true,
+      "detail": "Rebuild the extension host on change"
     }
   ]
 }
