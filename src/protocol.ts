@@ -138,6 +138,7 @@ export type OutboundMessage =
     }
   | { type: "deletePreview"; reqId: number; preview?: DeletePreview; error?: string }
   | { type: "exportResult"; reqId: number; ok: boolean; path?: string; error?: string }
+  // A row write landed and only this table's count moved; the schema is unchanged.
+  | { type: "rowCount"; table: string; count: number }
   | { type: "reloaded"; schema: DatabaseSchema }
-  | { type: "externalChange"; schema: DatabaseSchema }
-  | { type: "fatal"; message: string };
+  | { type: "externalChange"; schema: DatabaseSchema };

@@ -12,7 +12,7 @@ import { computed, ref, shallowRef, watch } from "vue";
 import type { GridColumn } from "../types";
 import { isNumericType, plural } from "../util";
 
-import { externalChangeCount, request, schema } from "./use-db";
+import { externalChangeCount, reloadCount, request, schema } from "./use-db";
 import { currentTable, useExplorer } from "./use-explorer";
 import { showToast } from "./use-toast";
 import { useUndo } from "./use-undo";
@@ -61,12 +61,19 @@ function buildQuery(t: TableSchema, pageIndex: number): TableQuery {
   };
 }
 
+let loadSeq = 0;
+
 async function load(): Promise<void> {
   const t = currentTable.value;
   if (!t) return;
 
+  const seq = ++loadSeq;
   const query = buildQuery(t, page.value);
   const res = await request("tableData", (reqId) => ({ type: "getTableData", reqId, query }));
+
+  // A slow sort or filter can land after a newer request has already answered;
+  // applying it would show rows that don't match the visible page and controls.
+  if (seq !== loadSeq) return;
 
   if (res.error) {
     showToast(res.error, true);
@@ -201,7 +208,8 @@ async function deleteRowsByIndex(indexes: number[]): Promise<void> {
   }
 
   recordEdit(res.undo, `delete of ${ids.length} row(s)`);
-  showToast(`Deleted ${plural(ids.length, "row")}.`);
+  const deleted = `Deleted ${plural(ids.length, "row")}.`;
+  showToast(res.undoUnavailable ? `${deleted} ${res.undoUnavailable}` : deleted);
   await load();
 }
 
@@ -269,6 +277,8 @@ watch(externalChangeCount, () => {
   discardHistory();
   void load();
 });
+
+watch(reloadCount, () => void load());
 
 function syncTable(): void {
   page.value = 0;

@@ -98,7 +98,7 @@ describe("undo", () => {
 
   test("round-trips through redo", () => {
     const undo = db.updateCell("t", 1, "name", "CHANGED");
-    const redo = db.applyUndo(undo);
+    const { undo: redo } = db.applyUndo(undo);
     assert.ok(redo);
     assert.equal(rowsOf()[0][1], "alpha");
     db.applyUndo(redo);
@@ -112,8 +112,9 @@ describe("undo", () => {
   });
 
   test("undoing an insert removes exactly that row", () => {
-    const undo = db.insertRow("t", { name: "temp", qty: 99 });
+    const { undo } = db.insertRow("t", { name: "temp", qty: 99 });
     assert.equal(rowsOf().length, 5);
+    assert.ok(undo);
     db.applyUndo(undo);
     assert.equal(rowsOf().length, 4);
     assert.ok(!namesOf().includes("temp"));

@@ -21,8 +21,14 @@ import { bindCell, likePattern, quoteId, wireCell, wireValue } from "./sql.ts";
 const ROWID_ALIAS = "__sqlite_explorer_rowid__";
 
 const MAX_QUERY_ROWS = 10_000;
+const MAX_UNDO_ROWS = 5_000;
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const MIN_SAFE = BigInt(Number.MIN_SAFE_INTEGER);
+
+export interface Write {
+  undo?: UndoOp;
+  cascaded: boolean;
+}
 
 function wireRow(row: unknown[]): unknown[] {
   return row.map(wireValue);
@@ -180,15 +186,26 @@ export class SqliteDatabase {
 
     const hasRowId = kind === "table" && this.tableHasRowId(name);
 
-    let rowCount = 0;
-    try {
-      const row = this.db.prepare<[], CountRow>(`SELECT COUNT(*) AS n FROM ${quoteId(name)}`).get();
-      rowCount = row?.n ?? 0;
-    } catch {
-      rowCount = -1; // unknown (e.g. a view over a missing table)
-    }
+    return {
+      name,
+      kind,
+      columns,
+      foreignKeys,
+      indexes,
+      hasRowId,
+      rowCount: this.tableRowCount(name),
+      ddl,
+    };
+  }
 
-    return { name, kind, columns, foreignKeys, indexes, hasRowId, rowCount, ddl };
+  tableRowCount(name: string): number {
+    try {
+      return (
+        this.db.prepare<[], CountRow>(`SELECT COUNT(*) AS n FROM ${quoteId(name)}`).get()?.n ?? 0
+      );
+    } catch {
+      return -1;
+    }
   }
 
   private tableHasRowId(name: string): boolean {
@@ -398,9 +415,10 @@ export class SqliteDatabase {
     return { kind: "updateRow", table, rowid, values: before };
   }
 
-  insertRow(table: string, values: Record<string, CellWire>): UndoOp {
+  insertRow(table: string, values: Record<string, CellWire>): Write {
     this.assertWritable();
     const cols = Object.keys(values);
+    const before = this.totalChanges();
     const info =
       cols.length === 0
         ? this.db.prepare(`INSERT INTO ${quoteId(table)} DEFAULT VALUES`).run()
@@ -412,7 +430,10 @@ export class SqliteDatabase {
             )
             .run(...cols.map((c) => bindCell(values[c])));
     const rowid = wireRowId(info.lastInsertRowid);
-    return { kind: "deleteRows", table, rowids: rowid === null ? [] : [rowid] };
+    return {
+      undo: { kind: "deleteRows", table, rowids: rowid === null ? [] : [rowid] },
+      cascaded: this.totalChanges() - before > info.changes,
+    };
   }
 
   /** Tables reachable from `target` by following foreign keys inward, transitively. */
@@ -483,12 +504,14 @@ export class SqliteDatabase {
    * would look successful while leaving the cascaded ones gone for good, so we
    * decline to offer undo rather than offer a lossy one.
    */
-  deleteRows(table: string, rowids: RowId[]): { changes: number; undo?: UndoOp } {
+  deleteRows(table: string, rowids: RowId[]): Write & { changes: number } {
     this.assertWritable();
     if (rowids.length === 0) {
-      return { changes: 0, undo: { kind: "restoreRows", table, rows: [] } };
+      return { changes: 0, undo: { kind: "restoreRows", table, rows: [] }, cascaded: false };
     }
-    const snapshots = this.snapshotRows(table, rowids);
+    // A snapshot lives on both sides of the postMessage bridge for the full
+    // history depth, so past a point it costs more than a bulk undo is worth.
+    const snapshots = rowids.length <= MAX_UNDO_ROWS ? this.snapshotRows(table, rowids) : null;
     const del = this.db.prepare(`DELETE FROM ${quoteId(table)} WHERE rowid = ?`);
     const tx = this.db.transaction((ids: RowId[]) => {
       let n = 0;
@@ -498,40 +521,55 @@ export class SqliteDatabase {
 
     const before = this.totalChanges();
     const changes = tx(rowids);
-    const collateral = this.totalChanges() - before - changes;
+    const cascaded = this.totalChanges() - before - changes > 0;
 
-    if (collateral > 0) return { changes };
-    return { changes, undo: { kind: "restoreRows", table, rows: snapshots } };
+    if (cascaded || snapshots === null) return { changes, cascaded };
+    return { changes, cascaded, undo: { kind: "restoreRows", table, rows: snapshots } };
   }
 
-  restoreRows(table: string, rows: RowSnapshot[]): UndoOp {
+  restoreRows(table: string, rows: RowSnapshot[]): Write {
     this.assertWritable();
+    // Keyed by column set, not by row: a bulk restore would otherwise re-compile
+    // the same INSERT thousands of times.
+    const statements = new Map<string, BetterSqlite3.Statement>();
     const tx = this.db.transaction((batch: RowSnapshot[]) => {
       for (const { rowid, values } of batch) {
         const cols = Object.keys(values);
-        const columnList = ["rowid", ...cols].map(quoteId).join(", ");
-        const placeholders = Array.from({ length: cols.length + 1 }, () => "?").join(", ");
-        this.db
-          .prepare(`INSERT INTO ${quoteId(table)} (${columnList}) VALUES (${placeholders})`)
-          .run(bindRowId(rowid), ...cols.map((c) => bindCell(values[c])));
+        const key = cols.join(" ");
+        let stmt = statements.get(key);
+        if (!stmt) {
+          const columnList = ["rowid", ...cols].map(quoteId).join(", ");
+          const placeholders = Array.from({ length: cols.length + 1 }, () => "?").join(", ");
+          stmt = this.db.prepare(
+            `INSERT INTO ${quoteId(table)} (${columnList}) VALUES (${placeholders})`,
+          );
+          statements.set(key, stmt);
+        }
+        stmt.run(bindRowId(rowid), ...cols.map((c) => bindCell(values[c])));
       }
     });
+
+    const before = this.totalChanges();
     tx(rows);
-    return { kind: "deleteRows", table, rowids: rows.map((r) => r.rowid) };
+    return {
+      undo: { kind: "deleteRows", table, rowids: rows.map((r) => r.rowid) },
+      cascaded: this.totalChanges() - before - rows.length > 0,
+    };
   }
 
   /**
    * Applies an inverse operation and returns the inverse of *that*, giving redo.
-   * Undefined when the applied operation cascaded and so can't itself be reversed.
+   * `undo` is absent when the applied operation cascaded and so can't itself be
+   * reversed.
    */
-  applyUndo(op: UndoOp): UndoOp | undefined {
+  applyUndo(op: UndoOp): Write {
     switch (op.kind) {
       case "updateCell":
-        return this.updateCell(op.table, op.rowid, op.column, op.value);
+        return { undo: this.updateCell(op.table, op.rowid, op.column, op.value), cascaded: false };
       case "updateRow":
-        return this.updateRow(op.table, op.rowid, op.values);
+        return { undo: this.updateRow(op.table, op.rowid, op.values), cascaded: false };
       case "deleteRows":
-        return this.deleteRows(op.table, op.rowids).undo;
+        return this.deleteRows(op.table, op.rowids);
       default:
         return this.restoreRows(op.table, op.rows);
     }

@@ -11,7 +11,7 @@ import ConfirmDialog from "./dialog/confirm.vue";
 import EditModal from "./edit-modal.vue";
 import InsertModal from "./insert-modal.vue";
 
-const { currentTable, navigateToFk } = useExplorer();
+const { currentTable, currentTableName, navigateToFk } = useExplorer();
 const {
   columns,
   rows,
@@ -41,7 +41,10 @@ const {
 } = useTableData();
 
 onMounted(() => void load());
-watch(currentTable, () => syncTable());
+// Keyed on the name, not the object: every reload hands `currentTable` a fresh
+// object for the same table, and watching that would reset the user's filters,
+// sort, and page after each insert, delete, or undo.
+watch(currentTableName, () => syncTable());
 
 const PAGE_SIZES = [100, 500, 1000, 5000, 20000];
 

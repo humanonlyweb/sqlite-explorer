@@ -1,14 +1,18 @@
 import { randomBytes } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import * as path from "path";
 
 import * as vscode from "vscode";
 
 import { SqliteDatabase } from "./database.ts";
 import type { DatabaseSchema, InboundMessage, OutboundMessage, TableSchema } from "./protocol.ts";
-import { dateStamp, formatForPath, serializeRows, slugify, type ExportRow } from "./serialize.ts";
+import { dateStamp, formatForPath, serializeChunks, slugify, type ExportRow } from "./serialize.ts";
 
 const CASCADE_NOTE =
   "Deleted rows in other tables too (ON DELETE CASCADE or a trigger), so this can't be undone.";
+const BULK_DELETE_NOTE = "Too many rows to keep an undo snapshot, so this can't be undone.";
 
 class SqliteDocument implements vscode.CustomDocument {
   readonly uri: vscode.Uri;
@@ -187,21 +191,25 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
         }
 
         case "insertRow": {
-          const undo = db.insertRow(msg.table, msg.values);
-          this.reload(document);
-          post({ type: "mutationResult", reqId: msg.reqId, ok: true, undo });
+          const write = db.insertRow(msg.table, msg.values);
+          this.afterWrite(document, msg.table, write.cascaded);
+          post({ type: "mutationResult", reqId: msg.reqId, ok: true, undo: write.undo });
           return;
         }
 
         case "deleteRows": {
-          const { undo } = db.deleteRows(msg.table, msg.rowids);
-          this.reload(document);
+          const write = db.deleteRows(msg.table, msg.rowids);
+          this.afterWrite(document, msg.table, write.cascaded);
           post({
             type: "mutationResult",
             reqId: msg.reqId,
             ok: true,
-            undo,
-            undoUnavailable: undo ? undefined : CASCADE_NOTE,
+            undo: write.undo,
+            undoUnavailable: write.undo
+              ? undefined
+              : write.cascaded
+                ? CASCADE_NOTE
+                : BULK_DELETE_NOTE,
           });
           return;
         }
@@ -213,14 +221,14 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
         }
 
         case "applyUndo": {
-          const undo = db.applyUndo(msg.op);
-          this.reload(document);
+          const write = db.applyUndo(msg.op);
+          this.afterWrite(document, msg.op.table, write.cascaded);
           post({
             type: "mutationResult",
             reqId: msg.reqId,
             ok: true,
-            undo,
-            undoUnavailable: undo ? undefined : CASCADE_NOTE,
+            undo: write.undo,
+            undoUnavailable: write.undo ? undefined : CASCADE_NOTE,
           });
           return;
         }
@@ -264,6 +272,22 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
     document.broadcast({ type: "reloaded", schema: document.schema });
   }
 
+  /**
+   * A row write can't change the schema, and re-reading it costs a COUNT(*) plus
+   * four PRAGMAs per table. Patch the one count that moved instead, falling back
+   * to a full reload only when the write cascaded into tables we can't name cheaply.
+   */
+  private afterWrite(document: SqliteDocument, table: string, cascaded: boolean): void {
+    if (cascaded) {
+      this.reload(document);
+      return;
+    }
+    const target = this.tableByName(document, table);
+    if (target) target.rowCount = document.db.tableRowCount(table);
+    document.dataVersion = document.db.dataVersion();
+    document.broadcast({ type: "rowCount", table, count: target?.rowCount ?? 0 });
+  }
+
   // Streams the rows to a file in whichever format the user picks from the save
   // dialog's file-type dropdown (CSV, SQL inserts, JSON array, or JSON lines).
   // `iterate` is a factory so the query only runs once a destination is chosen.
@@ -285,8 +309,15 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
     });
     if (!target) return undefined;
 
-    const content = serializeRows(formatForPath(target.fsPath), tableName, iterate());
-    await vscode.workspace.fs.writeFile(target, Buffer.from(content, "utf8"));
+    const chunks = serializeChunks(formatForPath(target.fsPath), tableName, iterate());
+    if (target.scheme === "file") {
+      // Backpressure holds the row iterator to the speed of the disk, so the
+      // export is never fully resident.
+      await pipeline(Readable.from(chunks), createWriteStream(target.fsPath));
+    } else {
+      // Virtual/remote filesystems only expose a whole-buffer write.
+      await vscode.workspace.fs.writeFile(target, Buffer.from([...chunks].join(""), "utf8"));
+    }
     return target.fsPath;
   }
 
