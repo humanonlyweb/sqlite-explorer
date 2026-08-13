@@ -69,11 +69,14 @@ watch(
 const filterModel = reactive<Record<string, string>>({});
 let filterTimer: number | undefined;
 
-// Resync inputs from props only when the set of columns changes (table switch
-// or FK jump), never on the reloads triggered by typing — so focus is kept.
+// Resync on table changes and programmatic filters such as FK navigation. A
+// filter typed here already has the same model value when its prop comes back.
 const columnsKey = computed(() => props.columns.map((c) => c.name).join(""));
+const filtersKey = computed(() =>
+  props.filters.map((f) => `${f.column}\0${f.value}\0${f.exact ? "1" : "0"}`).join(""),
+);
 watch(
-  columnsKey,
+  [columnsKey, filtersKey],
   () => {
     for (const key of Object.keys(filterModel)) delete filterModel[key];
     for (const f of props.filters) filterModel[f.column] = f.value;
@@ -105,7 +108,7 @@ function isEditing(row: number, col: number): boolean {
 }
 
 function beginEdit(row: number, col: number): void {
-  if (!props.editable) return;
+  if (!props.editable || isBlob(props.rows[row][col])) return;
   const v = props.rows[row][col];
   editDraft.value = v === null || v === undefined ? "" : stringifyCell(v);
   committed = false;
@@ -142,12 +145,17 @@ function isBlob(v: unknown): boolean {
   return typeof v === "object" && v !== null;
 }
 function blobLabel(v: unknown): string {
-  return `[blob ${v instanceof Uint8Array ? v.length : 0} bytes]`;
+  if (v instanceof Uint8Array) return `[blob ${v.length} bytes]`;
+  if (typeof v === "object" && v !== null && "blob" in v && typeof v.blob === "string") {
+    const padding = v.blob.endsWith("==") ? 2 : v.blob.endsWith("=") ? 1 : 0;
+    return `[blob ${Math.max(0, Math.floor((v.blob.length * 3) / 4) - padding)} bytes]`;
+  }
+  return "[blob]";
 }
 function cellClasses(col: GridColumn, v: unknown): Record<string, boolean> {
   return {
     numeric: col.numeric,
-    editable: props.editable,
+    editable: props.editable && !isBlob(v),
     "null-value": v === null || v === undefined,
     "blob-value": isBlob(v),
   };

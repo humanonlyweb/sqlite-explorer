@@ -22,6 +22,7 @@ const { recordEdit, discardHistory, undoStep, redoStep, canUndo, canRedo } = use
 
 const page = ref(0);
 const pageSize = ref(1000);
+let initializedPageSize = false;
 const filters = ref<Filter[]>([]);
 const sort = ref<{ column: string; dir: SortDir } | null>(null);
 
@@ -57,7 +58,11 @@ function buildQuery(t: TableSchema, pageIndex: number): TableQuery {
     page: pageIndex,
     pageSize: pageSize.value,
     sort: sort.value ? { column: sort.value.column, dir: sort.value.dir } : null,
-    filters: filters.value.map((f) => ({ column: f.column, value: f.value })),
+    filters: filters.value.map((f) => ({
+      column: f.column,
+      value: f.value,
+      exact: f.exact,
+    })),
   };
 }
 
@@ -66,6 +71,11 @@ let loadSeq = 0;
 async function load(): Promise<void> {
   const t = currentTable.value;
   if (!t) return;
+
+  if (!initializedPageSize && schema.value) {
+    pageSize.value = schema.value.pageSize;
+    initializedPageSize = true;
+  }
 
   const seq = ++loadSeq;
   const query = buildQuery(t, page.value);
@@ -83,6 +93,12 @@ async function load(): Promise<void> {
   if (!res.result) return;
 
   total.value = res.total ?? 0;
+  const lastPage = Math.max(0, Math.ceil(total.value / pageSize.value) - 1);
+  if (page.value > lastPage) {
+    page.value = lastPage;
+    await load();
+    return;
+  }
   columns.value = buildColumns(t, res.result.columns);
   rows.value = res.result.rows;
   rowids.value = res.result.rowids;
@@ -136,9 +152,8 @@ async function commitEdit(rowIndex: number, column: string, value: string | null
     return;
   }
   recordEdit(res.undo, `edit to ${column}`);
-  const ci = columns.value.findIndex((c) => c.name === column);
-  if (ci >= 0) rows.value[rowIndex][ci] = value;
-  rows.value = [...rows.value];
+  if (res.undoUnavailable) showToast(res.undoUnavailable);
+  await load();
 }
 
 async function updateRow(
@@ -167,12 +182,8 @@ async function updateRow(
     return false;
   }
   recordEdit(res.undo, "row edit");
-  const indexByName = new Map(columns.value.map((c, i) => [c.name, i]));
-  for (const [name, v] of Object.entries(values)) {
-    const ci = indexByName.get(name);
-    if (ci != null) rows.value[rowIndex][ci] = v;
-  }
-  rows.value = [...rows.value];
+  if (res.undoUnavailable) showToast(res.undoUnavailable);
+  await load();
   return true;
 }
 
@@ -229,7 +240,7 @@ async function insertRow(values: Record<string, string | null>): Promise<boolean
     return false;
   }
   recordEdit(res.undo, "row insert");
-  showToast("Row inserted.");
+  showToast(res.undoUnavailable ? `Row inserted. ${res.undoUnavailable}` : "Row inserted.");
   page.value = Math.max(0, Math.ceil((total.value + 1) / pageSize.value) - 1);
   await load();
   return true;

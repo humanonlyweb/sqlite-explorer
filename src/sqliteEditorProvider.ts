@@ -10,8 +10,7 @@ import { SqliteDatabase } from "./database.ts";
 import type { DatabaseSchema, InboundMessage, OutboundMessage, TableSchema } from "./protocol.ts";
 import { dateStamp, formatForPath, serializeChunks, slugify, type ExportRow } from "./serialize.ts";
 
-const CASCADE_NOTE =
-  "Deleted rows in other tables too (ON DELETE CASCADE or a trigger), so this can't be undone.";
+const SIDE_EFFECT_NOTE = "A trigger or cascade changed other rows, so this can't be undone.";
 const BULK_DELETE_NOTE = "Too many rows to keep an undo snapshot, so this can't be undone.";
 
 class SqliteDocument implements vscode.CustomDocument {
@@ -62,8 +61,11 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
     const readOnly = vscode.workspace
       .getConfiguration("sqliteExplorer")
       .get<boolean>("readOnly", false);
+    const pageSize = vscode.workspace
+      .getConfiguration("sqliteExplorer")
+      .get<number>("pageSize", 1000);
     const db = new SqliteDatabase(uri.fsPath, readOnly);
-    const schema = db.readSchema(path.basename(uri.fsPath));
+    const schema = db.readSchema(path.basename(uri.fsPath), pageSize);
     const document = new SqliteDocument(uri, db, schema);
     this.watchForExternalChanges(document);
     return document;
@@ -92,7 +94,10 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
           const version = document.db.dataVersion();
           if (version === document.dataVersion) return;
           document.dataVersion = version;
-          document.schema = document.db.readSchema(document.schema.fileName);
+          document.schema = document.db.readSchema(
+            document.schema.fileName,
+            document.schema.pageSize,
+          );
           document.broadcast({ type: "externalChange", schema: document.schema });
         } catch {
           /* file mid-write or briefly locked; the next event will catch it */
@@ -169,31 +174,58 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
         }
 
         case "runQuery": {
-          const { result, rowsAffected, truncated } = db.runQuery(msg.sql);
-          if (rowsAffected !== undefined && result === undefined) {
+          const { result, rowsAffected, truncated, mutated } = db.runQuery(msg.sql);
+          if (mutated) {
             // A mutation may have changed the schema or row counts.
             this.reload(document);
           }
-          post({ type: "queryResult", reqId: msg.reqId, result, rowsAffected, truncated });
+          post({
+            type: "queryResult",
+            reqId: msg.reqId,
+            result,
+            rowsAffected,
+            truncated,
+            mutated,
+          });
           return;
         }
 
         case "updateCell": {
-          const undo = db.updateCell(msg.table, msg.rowid, msg.column, msg.value);
-          post({ type: "mutationResult", reqId: msg.reqId, ok: true, undo });
+          const write = db.updateCell(msg.table, msg.rowid, msg.column, msg.value);
+          this.afterWrite(document, msg.table, write.cascaded);
+          post({
+            type: "mutationResult",
+            reqId: msg.reqId,
+            ok: true,
+            undo: write.undo,
+            undoUnavailable: write.undo ? undefined : SIDE_EFFECT_NOTE,
+          });
           return;
         }
 
         case "updateRow": {
-          const undo = db.updateRow(msg.table, msg.rowid, msg.values);
-          post({ type: "mutationResult", reqId: msg.reqId, ok: true, undo });
+          const write = db.updateRow(msg.table, msg.rowid, msg.values);
+          this.afterWrite(document, msg.table, write.cascaded);
+          post({
+            type: "mutationResult",
+            reqId: msg.reqId,
+            ok: true,
+            undo: write.undo,
+            undoUnavailable: write.undo ? undefined : SIDE_EFFECT_NOTE,
+          });
           return;
         }
 
         case "insertRow": {
           const write = db.insertRow(msg.table, msg.values);
           this.afterWrite(document, msg.table, write.cascaded);
-          post({ type: "mutationResult", reqId: msg.reqId, ok: true, undo: write.undo });
+          post({
+            type: "mutationResult",
+            reqId: msg.reqId,
+            ok: true,
+            undo: write.undo,
+            undoUnavailable: write.undo ? undefined : SIDE_EFFECT_NOTE,
+          });
           return;
         }
 
@@ -208,7 +240,7 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
             undoUnavailable: write.undo
               ? undefined
               : write.cascaded
-                ? CASCADE_NOTE
+                ? SIDE_EFFECT_NOTE
                 : BULK_DELETE_NOTE,
           });
           return;
@@ -228,7 +260,7 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
             reqId: msg.reqId,
             ok: true,
             undo: write.undo,
-            undoUnavailable: write.undo ? undefined : CASCADE_NOTE,
+            undoUnavailable: write.undo ? undefined : SIDE_EFFECT_NOTE,
           });
           return;
         }
@@ -260,14 +292,14 @@ export class SqliteEditorProvider implements vscode.CustomEditorProvider<SqliteD
       post({ type: "mutationResult", reqId, ok: false, error: message });
       // Also surface it on the specific channels the webview may be awaiting.
       post({ type: "tableData", reqId, error: message });
-      post({ type: "queryResult", reqId, error: message });
+      post({ type: "queryResult", reqId, mutated: false, error: message });
       post({ type: "deletePreview", reqId, error: message });
       post({ type: "exportResult", reqId, ok: false, error: message });
     }
   }
 
   private reload(document: SqliteDocument): void {
-    document.schema = document.db.readSchema(document.schema.fileName);
+    document.schema = document.db.readSchema(document.schema.fileName, document.schema.pageSize);
     document.dataVersion = document.db.dataVersion();
     document.broadcast({ type: "reloaded", schema: document.schema });
   }

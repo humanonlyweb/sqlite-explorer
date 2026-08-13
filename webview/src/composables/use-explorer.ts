@@ -7,7 +7,8 @@ export type TabId = "data" | "structure" | "sql";
 
 const currentTableName = ref<string | null>(null);
 const currentTab = ref<TabId>("data");
-let pendingFilter: { column: string; value: string } | null = null;
+const tableNavigationCount = ref(0);
+let pendingFilter: { column: string; value: string; exact?: boolean } | null = null;
 
 export const currentTable = computed<TableSchema | undefined>(() =>
   schema.value?.tables.find((t) => t.name === currentTableName.value),
@@ -20,15 +21,17 @@ function selectTable(name: string): void {
   // screen. The query text survives the switch, so returning to SQL is lossless.
   if (currentTab.value === "sql") currentTab.value = "data";
   currentTableName.value = name;
+  tableNavigationCount.value++;
 }
 
 function navigateToFk(table: string, column: string, value: string): void {
-  pendingFilter = { column, value };
+  pendingFilter = { column, value, exact: true };
   currentTab.value = "data";
   currentTableName.value = table;
+  tableNavigationCount.value++;
 }
 
-function takePendingFilter(): { column: string; value: string } | null {
+function takePendingFilter(): { column: string; value: string; exact?: boolean } | null {
   const f = pendingFilter;
   pendingFilter = null;
   return f;
@@ -39,6 +42,7 @@ export function useExplorer() {
     currentTableName,
     currentTab,
     currentTable,
+    tableNavigationCount,
     selectTable,
     navigateToFk,
     takePendingFilter,

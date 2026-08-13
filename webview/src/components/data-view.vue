@@ -11,7 +11,7 @@ import ConfirmDialog from "./dialog/confirm.vue";
 import EditModal from "./edit-modal.vue";
 import InsertModal from "./insert-modal.vue";
 
-const { currentTable, currentTableName, navigateToFk } = useExplorer();
+const { currentTable, tableNavigationCount, navigateToFk } = useExplorer();
 const {
   columns,
   rows,
@@ -44,9 +44,20 @@ onMounted(() => void load());
 // Keyed on the name, not the object: every reload hands `currentTable` a fresh
 // object for the same table, and watching that would reset the user's filters,
 // sort, and page after each insert, delete, or undo.
-watch(currentTableName, () => syncTable());
+watch(tableNavigationCount, () => syncTable());
 
-const PAGE_SIZES = [100, 500, 1000, 5000, 20000];
+const DEFAULT_PAGE_SIZES = [100, 500, 1000, 5000, 20000];
+const pageSizes = computed(() => {
+  const configured = pageSize.value;
+  if (DEFAULT_PAGE_SIZES.includes(configured)) return DEFAULT_PAGE_SIZES;
+  const insertAt = DEFAULT_PAGE_SIZES.findIndex((size) => size > configured);
+  if (insertAt < 0) return [...DEFAULT_PAGE_SIZES, configured];
+  return [
+    ...DEFAULT_PAGE_SIZES.slice(0, insertAt),
+    configured,
+    ...DEFAULT_PAGE_SIZES.slice(insertAt),
+  ];
+});
 
 const selectedIndexes = ref<number[]>([]);
 const showInsert = ref(false);
@@ -203,7 +214,7 @@ async function onInsert(values: Record<string, string | null>): Promise<void> {
         :value="pageSize"
         @change="setPageSize(Number(($event.target as HTMLSelectElement).value))"
       >
-        <option v-for="n in PAGE_SIZES" :key="n" :value="n">{{ n }}</option>
+        <option v-for="n in pageSizes" :key="n" :value="n">{{ n }}</option>
       </select>
       <span class="muted">Page {{ page + 1 }} / {{ pageCount }}</span>
     </div>

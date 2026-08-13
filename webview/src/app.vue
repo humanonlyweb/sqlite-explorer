@@ -10,7 +10,7 @@ import { initBridge, schema } from "./composables/use-db";
 import { useExplorer, type TabId } from "./composables/use-explorer";
 import { useTableData } from "./composables/use-table-data";
 
-const { currentTab, currentTableName, currentTable } = useExplorer();
+const { currentTab, currentTableName, currentTable, tableNavigationCount } = useExplorer();
 const { undoEdit, redoEdit } = useTableData();
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
@@ -22,9 +22,10 @@ const TABS: { id: TabId; label: string; icon: string }[] = [
 onMounted(initBridge);
 
 watch(schema, (s) => {
-  if (s && currentTableName.value === null) {
+  if (s && !s.tables.some((t) => t.name === currentTableName.value)) {
     const first = s.tables.find((t) => t.kind === "table") ?? s.tables[0];
-    if (first) currentTableName.value = first.name;
+    currentTableName.value = first?.name ?? null;
+    tableNavigationCount.value++;
   }
 });
 
