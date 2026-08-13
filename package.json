@@ -1,7 +1,7 @@
 {
   "name": "sqlite-explorer",
   "displayName": "SQLite Explorer",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Browse, query, and edit SQLite databases directly in VS Code.",
   "categories": [
     "Data Science",
@@ -121,6 +121,11 @@
           "type": "boolean",
           "default": false,
           "description": "Open databases in read-only mode (disables editing, inserts, and deletes)."
+        },
+        "sqliteExplorer.checkForUpdates": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check GitHub Releases for a newer version at most once per day when SQLite Explorer activates."
         }
       }
     }
