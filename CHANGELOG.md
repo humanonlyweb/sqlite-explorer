@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1
+
+### Fixed
+
+- **Sidebar no longer grows past the window on databases with many tables.**
+  The table list now scrolls within its own pane, with the database header
+  pinned above it, instead of squeezing every row down to fit or overflowing
+  the viewport.
+
 ## 0.2.0
 
 ### Added

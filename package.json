@@ -1,7 +1,7 @@
 {
   "name": "sqlite-explorer",
   "displayName": "SQLite Explorer",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Browse, query, and edit SQLite databases directly in VS Code.",
   "categories": [
     "Data Science",
