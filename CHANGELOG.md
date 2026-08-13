@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.3
+
+### Fixed
+
+- Safely edit tables whose columns shadow SQLite's `rowid` aliases.
+- Prevent export from re-running mutating `RETURNING` statements.
+- Disable inline BLOB editing and report BLOB sizes correctly.
+- Suppress undo or redo when triggers or cascades make it lossy.
+- Reload edited rows through active filters and sorting, and clamp empty pages.
+- Use exact matches for foreign-key navigation.
+- Apply the configured `sqliteExplorer.pageSize` in the data grid.
+
 ## 0.2.2
 
 ### Fixed

@@ -124,7 +124,7 @@ export class SqliteDatabase {
 
   // ---- Schema introspection --------------------------------------------
 
-  readSchema(fileName: string): DatabaseSchema {
+  readSchema(fileName: string, pageSize = 1000): DatabaseSchema {
     const objects = this.db
       .prepare<[], MasterRow>(
         `SELECT name, type, sql FROM sqlite_master
@@ -137,6 +137,7 @@ export class SqliteDatabase {
       fileName,
       filePath: this.filePath,
       readOnly: this.readOnly,
+      pageSize,
       tables: objects.map((o) => this.readTableSchema(o.name, o.type, o.sql)),
     };
   }
@@ -184,7 +185,7 @@ export class SqliteDatabase {
             }))
         : [];
 
-    const hasRowId = kind === "table" && this.tableHasRowId(name);
+    const hasRowId = kind === "table" && this.tableRowIdAlias(name, columns) !== null;
 
     return {
       name,
@@ -208,47 +209,82 @@ export class SqliteDatabase {
     }
   }
 
-  private tableHasRowId(name: string): boolean {
-    try {
-      this.db.prepare(`SELECT rowid FROM ${quoteId(name)} LIMIT 0`).run();
-      return true;
-    } catch {
-      return false;
+  /**
+   * SQLite exposes its hidden integer key through rowid, _rowid_, and oid, but
+   * an ordinary column with the same name shadows that alias. Pick an alias
+   * that is both unshadowed and actually available (WITHOUT ROWID tables have
+   * none) so a displayed row can never identify several records at once.
+   */
+  private tableRowIdAlias(name: string, columns?: ColumnInfo[]): string | null {
+    const declaredNames = columns
+      ? columns.map((c) => c.name)
+      : this.db
+          .prepare<[], PragmaColumn>(`PRAGMA table_info(${quoteId(name)})`)
+          .all()
+          .map((c) => c.name);
+    const declared = new Set(declaredNames.map((columnName) => columnName.toLowerCase()));
+
+    for (const alias of ["rowid", "_rowid_", "oid"]) {
+      if (declared.has(alias)) continue;
+      try {
+        this.db.prepare(`SELECT ${quoteId(alias)} FROM ${quoteId(name)} LIMIT 0`).all();
+        return alias;
+      } catch {
+        // Try the next hidden alias; WITHOUT ROWID tables reject all three.
+      }
     }
+    return null;
+  }
+
+  private requireRowIdAlias(name: string): string {
+    const alias = this.tableRowIdAlias(name);
+    if (alias === null) throw new Error(`Table ${name} has no accessible SQLite rowid.`);
+    return alias;
   }
 
   // ---- Reads ------------------------------------------------------------
 
   private buildWhere(filters: TableQuery["filters"]): {
     clause: string;
-    params: string[];
+    params: unknown[];
   } {
     const valid = filters.filter((f) => f.value !== "");
     if (valid.length === 0) return { clause: "", params: [] };
     const clause =
       " WHERE " +
-      valid.map((f) => `CAST(${quoteId(f.column)} AS TEXT) LIKE ? ESCAPE '\\'`).join(" AND ");
-    const params = valid.map((f) => likePattern(f.value));
+      valid
+        .map((f) =>
+          f.exact
+            ? `${quoteId(f.column)} = ?`
+            : `CAST(${quoteId(f.column)} AS TEXT) LIKE ? ESCAPE '\\'`,
+        )
+        .join(" AND ");
+    const params = valid.map((f) => (f.exact ? f.value : likePattern(f.value)));
     return { clause, params };
   }
 
   private buildSelectSql(
     query: TableQuery,
-    hasRowId: boolean,
+    includeRowId: boolean,
     withLimit: boolean,
     rowids?: RowId[],
   ): { sql: string; params: unknown[] } {
     const { clause, params } = this.buildWhere(query.filters);
     const bound: unknown[] = [...params];
 
+    const rowIdAlias =
+      includeRowId || (rowids?.length ?? 0) > 0 ? this.tableRowIdAlias(query.table) : null;
     let where = clause;
     if (rowids && rowids.length > 0) {
+      if (rowIdAlias === null) {
+        throw new Error(`Table ${query.table} has no accessible SQLite rowid.`);
+      }
       const inList = rowids.map(() => "?").join(", ");
-      where += `${where ? " AND" : " WHERE"} rowid IN (${inList})`;
+      where += `${where ? " AND" : " WHERE"} ${quoteId(rowIdAlias)} IN (${inList})`;
       bound.push(...rowids.map(bindRowId));
     }
 
-    const cols = hasRowId ? `rowid AS ${ROWID_ALIAS}, *` : "*";
+    const cols = includeRowId && rowIdAlias ? `${quoteId(rowIdAlias)} AS ${ROWID_ALIAS}, *` : "*";
     let sql = `SELECT ${cols} FROM ${quoteId(query.table)}${where}`;
     if (query.sort) {
       sql += ` ORDER BY ${quoteId(query.sort.column)} ${
@@ -265,7 +301,7 @@ export class SqliteDatabase {
   getTableData(query: TableQuery, hasRowId: boolean): { result: ResultSet; total: number } {
     const { clause, params } = this.buildWhere(query.filters);
     const totalRow = this.db
-      .prepare<string[], CountRow>(`SELECT COUNT(*) AS n FROM ${quoteId(query.table)}${clause}`)
+      .prepare<unknown[], CountRow>(`SELECT COUNT(*) AS n FROM ${quoteId(query.table)}${clause}`)
       .get(...params);
     const total = totalRow?.n ?? 0;
 
@@ -298,16 +334,22 @@ export class SqliteDatabase {
     return { columns, rows, rowids };
   }
 
-  runQuery(sql: string): { result?: ResultSet; rowsAffected?: number; truncated?: boolean } {
+  runQuery(sql: string): {
+    result?: ResultSet;
+    rowsAffected?: number;
+    truncated?: boolean;
+    mutated: boolean;
+  } {
     let stmt: BetterSqlite3.Statement<unknown[], unknown[]>;
     try {
       stmt = this.db.prepare<unknown[], unknown[]>(sql);
     } catch {
       // Multi-statement scripts can't be prepared; execute them wholesale.
       this.db.exec(sql);
-      return { rowsAffected: 0 };
+      return { rowsAffected: 0, mutated: true };
     }
 
+    const mutated = !stmt.readonly;
     if (stmt.reader) {
       const raw = stmt.raw(true).safeIntegers(true);
       const columns = raw.columns().map((c) => c.name);
@@ -320,11 +362,11 @@ export class SqliteDatabase {
         }
         rows.push(wireRow(row));
       }
-      return { result: { columns, rows, rowids: rows.map(() => null) }, truncated };
+      return { result: { columns, rows, rowids: rows.map(() => null) }, truncated, mutated };
     }
 
     const info = stmt.run();
-    return { rowsAffected: info.changes };
+    return { rowsAffected: info.changes, mutated };
   }
 
   // ---- Streaming export -------------------------------------------------
@@ -344,6 +386,7 @@ export class SqliteDatabase {
   *iterateQuery(sql: string): Generator<{ columns: string[]; row: unknown[] }, void, unknown> {
     const stmt = this.db.prepare<[], unknown[]>(sql);
     if (!stmt.reader) return;
+    if (!stmt.readonly) throw new Error("Only read-only query results can be exported.");
     const raw = stmt.raw(true).safeIntegers(true);
     const columns = raw.columns().map((c) => c.name);
     for (const row of raw.iterate()) {
@@ -361,10 +404,11 @@ export class SqliteDatabase {
 
   private snapshotRows(table: string, rowids: RowId[]): RowSnapshot[] {
     if (rowids.length === 0) return [];
+    const rowIdAlias = this.requireRowIdAlias(table);
     const inList = rowids.map(() => "?").join(", ");
     const stmt = this.db
       .prepare<unknown[], unknown[]>(
-        `SELECT rowid AS ${ROWID_ALIAS}, * FROM ${quoteId(table)} WHERE rowid IN (${inList})`,
+        `SELECT ${quoteId(rowIdAlias)} AS ${ROWID_ALIAS}, * FROM ${quoteId(table)} WHERE ${quoteId(rowIdAlias)} IN (${inList})`,
       )
       .raw(true)
       .safeIntegers(true);
@@ -379,44 +423,71 @@ export class SqliteDatabase {
       const values: Record<string, CellWire> = {};
 
       cols.forEach((c, i) => {
-        if (c !== ROWID_ALIAS) values[c] = wireCell(row[i]);
+        if (i > 0) values[c] = wireCell(row[i]);
       });
       snapshots.push({ rowid, values });
     }
     return snapshots;
   }
 
-  updateCell(table: string, rowid: RowId, column: string, value: CellWire): UndoOp {
+  updateCell(table: string, rowid: RowId, column: string, value: CellWire): Write {
     this.assertWritable();
+    const rowIdAlias = this.requireRowIdAlias(table);
     const before = this.db
-      .prepare(`SELECT ${quoteId(column)} FROM ${quoteId(table)} WHERE rowid = ?`)
+      .prepare(`SELECT ${quoteId(column)} FROM ${quoteId(table)} WHERE ${quoteId(rowIdAlias)} = ?`)
       .pluck(true)
       .safeIntegers(true)
       .get(bindRowId(rowid));
-    this.db
-      .prepare(`UPDATE ${quoteId(table)} SET ${quoteId(column)} = ? WHERE rowid = ?`)
+    if (before === undefined) throw new Error("The row no longer exists; reload and try again.");
+
+    const totalBefore = this.totalChanges();
+    const info = this.db
+      .prepare(
+        `UPDATE ${quoteId(table)} SET ${quoteId(column)} = ? WHERE ${quoteId(rowIdAlias)} = ?`,
+      )
       .run(bindCell(value), bindRowId(rowid));
-    return { kind: "updateCell", table, rowid, column, value: wireCell(before) };
+    if (info.changes !== 1) throw new Error("The row changed unexpectedly; reload and try again.");
+    const cascaded = this.totalChanges() - totalBefore > info.changes;
+    return {
+      cascaded,
+      undo: cascaded
+        ? undefined
+        : { kind: "updateCell", table, rowid, column, value: wireCell(before) },
+    };
   }
 
-  updateRow(table: string, rowid: RowId, values: Record<string, CellWire>): UndoOp {
+  updateRow(table: string, rowid: RowId, values: Record<string, CellWire>): Write {
     this.assertWritable();
     const cols = Object.keys(values);
-    if (cols.length === 0) return { kind: "updateRow", table, rowid, values: {} };
+    if (cols.length === 0) {
+      return {
+        undo: { kind: "updateRow", table, rowid, values: {} },
+        cascaded: false,
+      };
+    }
 
     const [snapshot] = this.snapshotRows(table, [rowid]);
+    if (!snapshot) throw new Error("The row no longer exists; reload and try again.");
     const before: Record<string, CellWire> = {};
-    for (const c of cols) before[c] = snapshot?.values[c] ?? null;
+    for (const c of cols) before[c] = snapshot.values[c] ?? null;
 
+    const rowIdAlias = this.requireRowIdAlias(table);
     const assignments = cols.map((c) => `${quoteId(c)} = ?`).join(", ");
-    this.db
-      .prepare(`UPDATE ${quoteId(table)} SET ${assignments} WHERE rowid = ?`)
+    const totalBefore = this.totalChanges();
+    const info = this.db
+      .prepare(`UPDATE ${quoteId(table)} SET ${assignments} WHERE ${quoteId(rowIdAlias)} = ?`)
       .run(...cols.map((c) => bindCell(values[c])), bindRowId(rowid));
-    return { kind: "updateRow", table, rowid, values: before };
+    if (info.changes !== 1) throw new Error("The row changed unexpectedly; reload and try again.");
+    const cascaded = this.totalChanges() - totalBefore > info.changes;
+    return {
+      cascaded,
+      undo: cascaded ? undefined : { kind: "updateRow", table, rowid, values: before },
+    };
   }
 
   insertRow(table: string, values: Record<string, CellWire>): Write {
     this.assertWritable();
+    this.requireRowIdAlias(table);
     const cols = Object.keys(values);
     const before = this.totalChanges();
     const info =
@@ -430,9 +501,12 @@ export class SqliteDatabase {
             )
             .run(...cols.map((c) => bindCell(values[c])));
     const rowid = wireRowId(info.lastInsertRowid);
+    const cascaded = this.totalChanges() - before > info.changes;
     return {
-      undo: { kind: "deleteRows", table, rowids: rowid === null ? [] : [rowid] },
-      cascaded: this.totalChanges() - before > info.changes,
+      undo: cascaded
+        ? undefined
+        : { kind: "deleteRows", table, rowids: rowid === null ? [] : [rowid] },
+      cascaded,
     };
   }
 
@@ -476,7 +550,8 @@ export class SqliteDatabase {
   previewDelete(table: string, rowids: RowId[]): DeletePreview {
     if (this.readOnly || rowids.length === 0) return { direct: 0, collateral: 0, tables: [] };
 
-    const del = this.db.prepare(`DELETE FROM ${quoteId(table)} WHERE rowid = ?`);
+    const rowIdAlias = this.requireRowIdAlias(table);
+    const del = this.db.prepare(`DELETE FROM ${quoteId(table)} WHERE ${quoteId(rowIdAlias)} = ?`);
     let direct = 0;
     let collateral = 0;
     const before = this.totalChanges();
@@ -512,7 +587,8 @@ export class SqliteDatabase {
     // A snapshot lives on both sides of the postMessage bridge for the full
     // history depth, so past a point it costs more than a bulk undo is worth.
     const snapshots = rowids.length <= MAX_UNDO_ROWS ? this.snapshotRows(table, rowids) : null;
-    const del = this.db.prepare(`DELETE FROM ${quoteId(table)} WHERE rowid = ?`);
+    const rowIdAlias = this.requireRowIdAlias(table);
+    const del = this.db.prepare(`DELETE FROM ${quoteId(table)} WHERE ${quoteId(rowIdAlias)} = ?`);
     const tx = this.db.transaction((ids: RowId[]) => {
       let n = 0;
       for (const id of ids) n += del.run(bindRowId(id)).changes;
@@ -529,6 +605,7 @@ export class SqliteDatabase {
 
   restoreRows(table: string, rows: RowSnapshot[]): Write {
     this.assertWritable();
+    const rowIdAlias = this.requireRowIdAlias(table);
     // Keyed by column set, not by row: a bulk restore would otherwise re-compile
     // the same INSERT thousands of times.
     const statements = new Map<string, BetterSqlite3.Statement>();
@@ -538,7 +615,7 @@ export class SqliteDatabase {
         const key = cols.join(" ");
         let stmt = statements.get(key);
         if (!stmt) {
-          const columnList = ["rowid", ...cols].map(quoteId).join(", ");
+          const columnList = [rowIdAlias, ...cols].map(quoteId).join(", ");
           const placeholders = Array.from({ length: cols.length + 1 }, () => "?").join(", ");
           stmt = this.db.prepare(
             `INSERT INTO ${quoteId(table)} (${columnList}) VALUES (${placeholders})`,
@@ -551,9 +628,10 @@ export class SqliteDatabase {
 
     const before = this.totalChanges();
     tx(rows);
+    const cascaded = this.totalChanges() - before - rows.length > 0;
     return {
-      undo: { kind: "deleteRows", table, rowids: rows.map((r) => r.rowid) },
-      cascaded: this.totalChanges() - before - rows.length > 0,
+      undo: cascaded ? undefined : { kind: "deleteRows", table, rowids: rows.map((r) => r.rowid) },
+      cascaded,
     };
   }
 
@@ -565,9 +643,9 @@ export class SqliteDatabase {
   applyUndo(op: UndoOp): Write {
     switch (op.kind) {
       case "updateCell":
-        return { undo: this.updateCell(op.table, op.rowid, op.column, op.value), cascaded: false };
+        return this.updateCell(op.table, op.rowid, op.column, op.value);
       case "updateRow":
-        return { undo: this.updateRow(op.table, op.rowid, op.values), cascaded: false };
+        return this.updateRow(op.table, op.rowid, op.values);
       case "deleteRows":
         return this.deleteRows(op.table, op.rowids);
       default:

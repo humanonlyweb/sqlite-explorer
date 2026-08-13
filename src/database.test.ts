@@ -86,18 +86,24 @@ describe("schema", () => {
     assert.equal(tables.find((x) => x.name === "t")?.hasRowId, true);
     assert.equal(tables.find((x) => x.name === "nr")?.hasRowId, false);
   });
+
+  test("carries the configured page size to the webview schema", () => {
+    assert.equal(db.readSchema("t.db", 500).pageSize, 500);
+  });
 });
 
 describe("undo", () => {
   test("restores the previous cell value", () => {
-    const undo = db.updateCell("t", 1, "name", "CHANGED");
+    const { undo } = db.updateCell("t", 1, "name", "CHANGED");
+    assert.ok(undo);
     assert.equal(rowsOf()[0][1], "CHANGED");
     db.applyUndo(undo);
     assert.equal(rowsOf()[0][1], "alpha");
   });
 
   test("round-trips through redo", () => {
-    const undo = db.updateCell("t", 1, "name", "CHANGED");
+    const { undo } = db.updateCell("t", 1, "name", "CHANGED");
+    assert.ok(undo);
     const { undo: redo } = db.applyUndo(undo);
     assert.ok(redo);
     assert.equal(rowsOf()[0][1], "alpha");
@@ -106,7 +112,8 @@ describe("undo", () => {
   });
 
   test("restores a NULL rather than an empty string", () => {
-    const undo = db.updateCell("t", 1, "blob", "not-null-anymore");
+    const { undo } = db.updateCell("t", 1, "blob", "not-null-anymore");
+    assert.ok(undo);
     db.applyUndo(undo);
     assert.equal(rowsOf()[0][3], null);
   });
@@ -148,10 +155,123 @@ describe("undo", () => {
   });
 
   test("multi-column row edits revert every column", () => {
-    const undo = db.updateRow("t", 1, { name: "x", qty: 999 });
+    const { undo } = db.updateRow("t", 1, { name: "x", qty: 999 });
+    assert.ok(undo);
     assert.deepEqual(rowsOf()[0].slice(0, 3), [1, "x", 999]);
     db.applyUndo(undo);
     assert.deepEqual(rowsOf()[0].slice(0, 3), [1, "alpha", 1]);
+  });
+});
+
+describe("row identity", () => {
+  test("uses an unshadowed hidden alias when a table declares rowid", () => {
+    db.runQuery(`
+      CREATE TABLE shadowed (rowid INTEGER, value TEXT);
+      INSERT INTO shadowed (rowid, value) VALUES (7, 'a'), (7, 'b');
+    `);
+    const table = db.readSchema("t.db").tables.find((t) => t.name === "shadowed");
+    assert.equal(table?.hasRowId, true);
+
+    const result = db.getTableData({ ...query(), table: "shadowed" }, true).result;
+    assert.equal(new Set(result.rowids).size, 2);
+    const firstId = result.rowids[0];
+    assert.notEqual(firstId, null);
+
+    db.updateCell("shadowed", firstId!, "value", "changed");
+    const values = db
+      .getTableData({ ...query(), table: "shadowed" }, true)
+      .result.rows.map((row) => row[1]);
+    assert.deepEqual(values, ["changed", "b"]);
+  });
+
+  test("marks a table read-only when every hidden rowid alias is shadowed", () => {
+    db.runQuery("CREATE TABLE fully_shadowed (rowid, _rowid_, oid, value)");
+    const table = db.readSchema("t.db").tables.find((t) => t.name === "fully_shadowed");
+    assert.equal(table?.hasRowId, false);
+  });
+
+  test("preserves a user column that matches the internal result alias", () => {
+    db.runQuery(`
+      CREATE TABLE alias_collision (__sqlite_explorer_rowid__ TEXT, value TEXT);
+      INSERT INTO alias_collision VALUES ('keep me', 'value');
+    `);
+    const tableQuery = { ...query(), table: "alias_collision" };
+    const original = db.getTableData(tableQuery, true).result;
+    const rowid = original.rowids[0];
+    assert.notEqual(rowid, null);
+
+    const { undo } = db.deleteRows("alias_collision", [rowid!]);
+    assert.ok(undo);
+    db.applyUndo(undo);
+    assert.deepEqual(db.getTableData(tableQuery, true).result.rows, original.rows);
+  });
+});
+
+describe("query mutations", () => {
+  test("classifies RETURNING statements as mutations and refuses to export them", () => {
+    const result = db.runQuery("INSERT INTO t(name) VALUES ('returning') RETURNING id, name");
+    assert.equal(result.mutated, true);
+    assert.deepEqual(result.result?.rows[0].slice(1), ["returning"]);
+    assert.throws(
+      () => [...db.iterateQuery("INSERT INTO t(name) VALUES ('again') RETURNING id")],
+      /read-only query results/i,
+    );
+    assert.equal(namesOf().filter((name) => name === "returning").length, 1);
+    assert.ok(!namesOf().includes("again"));
+  });
+
+  test("allows ordinary SELECT results to be exported", () => {
+    const result = db.runQuery("SELECT name FROM t ORDER BY id");
+    assert.equal(result.mutated, false);
+    assert.equal([...db.iterateQuery("SELECT name FROM t ORDER BY id")].length, 4);
+  });
+});
+
+describe("exact filters", () => {
+  test("foreign-key style exact filters do not match substrings", () => {
+    db.insertRow("t", { name: "alpha", qty: 10 });
+    const rows = rowsOf(query({ filters: [{ column: "qty", value: "1", exact: true }] }));
+    assert.deepEqual(
+      rows.map((row) => row[2]),
+      [1],
+    );
+  });
+});
+
+describe("trigger side effects", () => {
+  test("does not offer undo for updates or inserts that fire a trigger", () => {
+    db.runQuery(`
+      CREATE TABLE audit (message TEXT);
+      CREATE TRIGGER t_update AFTER UPDATE ON t BEGIN
+        INSERT INTO audit VALUES ('updated');
+      END;
+      CREATE TRIGGER t_insert AFTER INSERT ON t BEGIN
+        INSERT INTO audit VALUES ('inserted');
+      END;
+    `);
+
+    const update = db.updateCell("t", 1, "name", "triggered");
+    assert.equal(update.cascaded, true);
+    assert.equal(update.undo, undefined);
+
+    const insert = db.insertRow("t", { name: "triggered insert" });
+    assert.equal(insert.cascaded, true);
+    assert.equal(insert.undo, undefined);
+  });
+
+  test("does not offer redo when restoring a deleted row fires an insert trigger", () => {
+    db.runQuery(`
+      CREATE TABLE audit (message TEXT);
+      CREATE TRIGGER t_insert AFTER INSERT ON t BEGIN
+        INSERT INTO audit VALUES ('inserted');
+      END;
+    `);
+    const { undo } = db.deleteRows("t", [1]);
+    assert.ok(undo);
+
+    const restore = db.applyUndo(undo);
+    assert.equal(restore.cascaded, true);
+    assert.equal(restore.undo, undefined);
   });
 });
 

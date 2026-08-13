@@ -17,6 +17,7 @@ const status = ref("Ready.");
 const statusError = ref(false);
 const canExport = ref(false);
 const running = ref(false);
+let exportSql = "";
 
 async function run(): Promise<void> {
   const sql = sqlText.value.trim();
@@ -33,6 +34,7 @@ async function run(): Promise<void> {
       status.value = res.error;
       statusError.value = true;
       canExport.value = false;
+      exportSql = "";
       return;
     }
 
@@ -47,12 +49,15 @@ async function run(): Promise<void> {
       status.value = res.truncated
         ? `Showing first ${formatCount(res.result.rows.length)} rows (truncated — export for the full result).`
         : `${formatCount(res.result.rows.length)} row(s).`;
-      canExport.value = true;
+      exportSql = res.mutated ? "" : sql;
+      canExport.value = !res.mutated;
+      if (res.mutated) discardHistory();
     } else {
       columns.value = [];
       rows.value = [];
       status.value = `Done. ${res.rowsAffected ?? 0} row(s) affected.`;
       canExport.value = false;
+      exportSql = "";
       // Arbitrary SQL can drop or renumber the rows the history addresses.
       discardHistory();
     }
@@ -62,7 +67,7 @@ async function run(): Promise<void> {
 }
 
 async function exportCsv(): Promise<void> {
-  const sql = sqlText.value.trim();
+  const sql = exportSql;
   if (!sql) return;
 
   showToast("Exporting…");

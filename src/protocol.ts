@@ -33,6 +33,7 @@ export interface DatabaseSchema {
   fileName: string;
   filePath: string;
   readOnly: boolean;
+  pageSize: number;
   tables: TableSchema[];
 }
 
@@ -41,6 +42,7 @@ export type SortDir = "asc" | "desc";
 export interface Filter {
   column: string;
   value: string;
+  exact?: boolean;
 }
 
 export interface TableQuery {
@@ -125,6 +127,7 @@ export type OutboundMessage =
       result?: ResultSet;
       rowsAffected?: number;
       truncated?: boolean;
+      mutated: boolean;
       error?: string;
     }
   | {
