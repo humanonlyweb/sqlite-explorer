@@ -1,8 +1,11 @@
 import * as vscode from "vscode";
 
 import { SqliteEditorProvider } from "./sqliteEditorProvider.ts";
+import { checkForUpdates } from "./updateNotifier.ts";
 
 export function activate(context: vscode.ExtensionContext): void {
+  void checkForUpdates(context);
+
   const provider = new SqliteEditorProvider(context);
 
   context.subscriptions.push(

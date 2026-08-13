@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- A once-daily GitHub release check when SQLite Explorer activates. Each release
+  is announced at most once, and the check can be disabled in settings.
+
 ## 0.2.3
 
 ### Fixed

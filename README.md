@@ -34,7 +34,8 @@ code --install-extension sqlite-explorer-<platform>-<version>.vsix
 
 Alternatively, use Extensions → `…` → **Install from VSIX…**.
 VSIX installations do not receive GitHub release updates automatically; install
-newer versions the same way.
+newer versions the same way. SQLite Explorer checks GitHub Releases at most once
+per day when it activates and announces each new release once.
 
 ## Usage
 
@@ -53,10 +54,11 @@ External database writes reload the view and clear undo history.
 
 ## Settings
 
-| Setting                   | Default | Description               |
-| ------------------------- | ------- | ------------------------- |
-| `sqliteExplorer.pageSize` | `1000`  | Rows fetched per page.    |
-| `sqliteExplorer.readOnly` | `false` | Open databases read-only. |
+| Setting                          | Default | Description                         |
+| -------------------------------- | ------- | ----------------------------------- |
+| `sqliteExplorer.pageSize`        | `1000`  | Rows fetched per page.              |
+| `sqliteExplorer.readOnly`        | `false` | Open databases read-only.           |
+| `sqliteExplorer.checkForUpdates` | `true`  | Check GitHub Releases once per day. |
 
 ## Development
 
