@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.2
+
+### Fixed
+
+- **"Tables"/"Views" section label scrolled away instead of staying pinned.**
+  It's now sticky under the database name header, like the header itself.
+- **Scrolled-past rows showed through the sticky header.** The header and
+  section label dimmed their text via `opacity` on the whole element, which
+  also made their solid background semi-transparent, letting rows scrolled
+  underneath bleed through. They now dim only the text color instead.
+
 ## 0.2.1
 
 ### Fixed
